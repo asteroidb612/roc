@@ -1,0 +1,180 @@
+*roc.txt*  Write Vim plugins in Roc
+
+                                 roc-vim~
+
+Plugins written in Roc, built when they change and started when Vim starts.
+
+1. How it works ......................... |roc-vim-how|
+2. Commands ............................. |roc-vim-commands|
+3. Options .............................. |roc-vim-options|
+4. Writing a plugin ..................... |roc-vim-writing|
+5. Talking to plugins from Vimscript .... |roc-vim-vimscript|
+6. What plugins can ask Vim for ......... |roc-vim-api|
+7. Troubleshooting ...................... |roc-vim-trouble|
+
+==============================================================================
+1. How it works                                              *roc-vim-how*
+
+A Roc plugin is a program. When Vim starts, roc-vim looks in |g:roc_plugin_dir|
+for `.roc` files, builds any whose source is newer than the last build, and
+starts each one as a job with a JSON channel (see |channel|).
+
+From then on the plugin and Vim talk over that channel: the plugin sends Ex
+commands and expression requests, and Vim sends it the events it asked for.
+The plugin keeps running until Vim exits, so anything it remembers stays
+remembered - no global variables required.
+
+==============================================================================
+2. Commands                                             *roc-vim-commands*
+
+                                                              *:RocPlugins*
+:RocPlugins             List every plugin, whether it is running, and its pid.
+
+                                                                  *:RocLog*
+:RocLog                 Open a window with everything the plugins have logged
+                        (their standard error) plus any build errors.
+
+                                                                *:RocStart*
+:RocStart [name]        Start a stopped plugin, or all of them.
+
+                                                                 *:RocStop*
+:RocStop [name]         Stop a plugin, or all of them. Closing its channel is
+                        the plugin's cue to exit.
+
+                                                              *:RocRestart*
+:RocRestart [name]      Stop, rebuild if needed, and start again.
+
+                                                                *:RocBuild*
+:RocBuild [name]        Build without restarting.
+
+Plugins define commands of their own; those are up to them.
+
+==============================================================================
+3. Options                                               *roc-vim-options*
+
+                                                       *g:roc_plugin_dir*
+Where your plugins live. Default: `~/.vim/roc`
+Both `~/.vim/roc/foo.roc` and `~/.vim/roc/foo/main.roc` are found.
+
+                                                        *g:roc_build_dir*
+Where compiled plugins are kept. Default: `~/.cache/roc-vim`
+
+                                                         *g:roc_command*
+The Roc compiler to build with. Default: `roc`
+
+                                                      *g:roc_auto_build*
+Build a plugin when its source is newer than its executable. Default: 1
+With this off, plugins are only built by |:RocBuild|.
+
+                                                      *g:roc_auto_start*
+Start plugins when Vim starts. Default: 1
+
+                                                 *g:roc_reload_on_write*
+Rebuild and restart a plugin when you save its source. Default: 1
+
+                                                    *g:roc_build_target*
+A `--target` to pass to `roc build`, such as `x64glibc`. Default: "" (the
+target Roc picks for this machine).
+
+==============================================================================
+4. Writing a plugin                                      *roc-vim-writing*
+
+Put this in `~/.vim/roc/greet.roc`: >
+
+    app [main!] { vim: platform "platform/main.roc" }
+
+    import vim.Vim
+
+    main! : () => Try({}, _)
+    main! = || {
+        Vim.subscribe!(["BufWritePost"])
+        Vim.add_command!("Greet")
+        loop!()
+    }
+
+    loop! : () => Try({}, _)
+    loop! = ||
+        match Vim.receive!() {
+            Closed => Ok({})
+            Notify(event) => {
+                Vim.echo!("saw ${event.name}")
+                loop!()
+            }
+            _ => loop!()
+        }
+<
+Then `:RocStart greet`, or just restart Vim.
+
+Register commands and mappings last. A plugin sets itself up in order, so
+`:Greet` existing tells you everything registered before it is in place too.
+
+==============================================================================
+5. Talking to plugins from Vimscript                   *roc-vim-vimscript*
+
+                                                             *roc#send()*
+roc#send({name}, {event}, {data})
+                        Send a plugin an event. Returns immediately.
+                        The plugin sees a Notify named {event}. >
+                            call roc#send('greet', 'refresh', {'why': 'timer'})
+<
+                                                              *roc#ask()*
+roc#ask({name}, {event}, {data} [, {timeout} [, {default}]])
+                        Send an event and wait for the plugin's answer.
+                        {timeout} is in milliseconds (default 2000), and
+                        {default} comes back if the plugin does not answer. >
+                            echo roc#ask('ticker', 'uptime', 0)
+<
+                                                          *roc#sources()*
+roc#sources()           Every plugin source roc-vim can see.
+
+                                                             *roc#logs()*
+roc#logs()              A dictionary of plugin name to logged lines.
+
+==============================================================================
+6. What plugins can ask Vim for                              *roc-vim-api*
+
+The Roc side is documented in the platform's `Vim.roc`. In short:
+
+    Vim.ex!(cmd)                run an Ex command
+    Vim.echo!/echom!/error!     say something
+    Vim.normal!(keys)           feed keys in normal mode
+    Vim.eval!(expr)             evaluate an expression, wait for the answer
+    Vim.eval_str!/eval_int!     the same, already unwrapped
+    Vim.call!(name, args)       call a Vim function, wait for the answer
+    Vim.line!/lines!            read the buffer
+    Vim.set_line!/set_lines!    write the buffer
+    Vim.append_lines!           insert lines
+    Vim.cursor!/set_cursor!     where the cursor is, where it should be
+    Vim.buffer_name!/filetype!  about the current buffer
+    Vim.var!/set_var!           read and write Vim variables
+    Vim.subscribe!(events)      ask for autocommand events
+    Vim.add_command!(name)      define an Ex command
+    Vim.add_mapping!(mode, lhs) define a mapping
+    Vim.receive!()              wait for the next event
+    Vim.receive_timeout!(ms)    wait, but not forever
+    Vim.reply!(id, value)       answer a roc#ask()
+    Vim.log!(message)           write a line to :RocLog
+
+An event subscription is an autocommand name, optionally with a pattern:
+`"BufWritePost"` or `"BufWritePost *.md"`.
+
+==============================================================================
+7. Troubleshooting                                       *roc-vim-trouble*
+
+Nothing happened~
+|:RocPlugins| says whether a plugin is running. If it is not there at all,
+check |g:roc_plugin_dir|. If it exited, |:RocLog| has its last words.
+
+It will not build~
+|:RocLog| shows the compiler's output. Building by hand often says more: >
+    roc build ~/.vim/roc/greet.roc
+<
+Vim pauses when I start it~
+A plugin whose source changed is built before it starts, and building takes a
+moment. Set |g:roc_auto_build| to 0 and build with |:RocBuild| instead.
+
+My plugin cannot find the platform~
+The `platform "platform/main.roc"` path is relative to the plugin's own file.
+`setup.sh` puts a link at `~/.vim/roc/platform` for exactly this.
+
+ vim:tw=78:ts=8:noet:ft=help:norl:
