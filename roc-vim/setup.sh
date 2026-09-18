@@ -50,8 +50,16 @@ fi
 # The native host
 # ---------------------------------------------------------------------------
 
-say "building the platform host"
+say "building the channel platform host"
 "$repo/platform/build.sh"
+
+# The in-process platform only needs the system C compiler, and a host built
+# for it is useless without a +roc Vim, so a failure here is not fatal.
+if "$repo/platform-inprocess/build.sh" >/dev/null 2>&1; then
+    say "building the in-process platform host"
+else
+    say "skipped the in-process platform host (needs a working C compiler)"
+fi
 
 # ---------------------------------------------------------------------------
 # The Vim side
@@ -91,6 +99,15 @@ else
     ln -s "$repo/platform" "$plugin_dir/platform"
 fi
 
+if [ -L "$plugin_dir/platform-inprocess" ]; then
+    rm -f "$plugin_dir/platform-inprocess"
+fi
+if [ -e "$plugin_dir/platform-inprocess" ]; then
+    say "$plugin_dir/platform-inprocess already exists and is not a link; leaving it alone."
+else
+    ln -s "$repo/platform-inprocess" "$plugin_dir/platform-inprocess"
+fi
+
 if [ "$copy_all_examples" -eq 1 ]; then
     examples="hello word_count uppercase ticker"
 else
@@ -107,6 +124,11 @@ for example in $examples; do
         "$repo/examples/$example.roc" > "$destination"
     say "added $destination"
 done
+
+if vim --version | tr ' ' '\n' | grep -qx '+roc'; then
+    say "this vim has +roc, so plugins can also run inside it"
+    say "see $repo/examples-inprocess and $repo/README.md"
+fi
 
 cat <<EOF
 

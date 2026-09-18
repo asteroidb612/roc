@@ -10,7 +10,8 @@ Plugins written in Roc, built when they change and started when Vim starts.
 4. Writing a plugin ..................... |roc-vim-writing|
 5. Talking to plugins from Vimscript .... |roc-vim-vimscript|
 6. What plugins can ask Vim for ......... |roc-vim-api|
-7. Troubleshooting ...................... |roc-vim-trouble|
+7. Plugins inside Vim ................... |roc-vim-inprocess|
+8. Troubleshooting ...................... |roc-vim-trouble|
 
 ==============================================================================
 1. How it works                                              *roc-vim-how*
@@ -23,6 +24,10 @@ From then on the plugin and Vim talk over that channel: the plugin sends Ex
 commands and expression requests, and Vim sends it the events it asked for.
 The plugin keeps running until Vim exits, so anything it remembers stays
 remembered - no global variables required.
+
+A plugin can also run inside Vim rather than beside it; see
+|roc-vim-inprocess|. Which one a plugin wants is decided by its own source, so
+both kinds can sit in the same directory.
 
 ==============================================================================
 2. Commands                                             *roc-vim-commands*
@@ -73,8 +78,9 @@ Start plugins when Vim starts. Default: 1
 Rebuild and restart a plugin when you save its source. Default: 1
 
                                                     *g:roc_build_target*
-A `--target` to pass to `roc build`, such as `x64glibc`. Default: "" (the
-target Roc picks for this machine).
+A `--target` to pass to `roc build`, such as `x64glibc`. Default: "" - Roc's
+own default for channel plugins, and the system libc for in-process ones. On a
+musl system such as Alpine, set this to `x64musl`.
 
 ==============================================================================
 4. Writing a plugin                                      *roc-vim-writing*
@@ -159,7 +165,40 @@ An event subscription is an autocommand name, optionally with a pattern:
 `"BufWritePost"` or `"BufWritePost *.md"`.
 
 ==============================================================================
-7. Troubleshooting                                       *roc-vim-trouble*
+7. Plugins inside Vim                                  *roc-vim-inprocess*
+
+A Vim built with the |+roc| feature can load a plugin into its own process
+instead of running it as a job. Effects then happen as direct calls: no
+messages, no waiting, and `roc#ask()` answers like a function.
+
+Such a plugin is built against `platform-inprocess/` and its source starts: >
+
+    app [Model, plugin] { vim: platform "platform-inprocess/main.roc" }
+<
+Vim keeps the main loop, so the plugin provides `init!` (build the first model)
+and `handle!` (take the model and an event, return the next model) rather than
+looping itself.
+
+Check whether your Vim can do this: >
+
+    echo has('roc')
+<
+If it cannot, see `vim-patch/` in the roc-vim repository, which has the patch
+and a script that builds a Vim with it. In-process plugins also need a Roc
+compiler with `compiler-patch/` applied, which lets Roc link a program with
+string literals into a shared library.
+
+What it costs~
+A plugin in Vim's process blocks Vim while it runs, and a plugin that crashes
+leaks whatever it was holding (Vim itself survives, and the plugin stops). Work
+that takes time belongs in a channel plugin.
+
+These functions are what the Vimscript layer uses; you should not need them:
+`roc_load({path})`, `roc_event({handle}, {name} [, {data}])`,
+`roc_unload({handle})`.
+
+==============================================================================
+8. Troubleshooting                                       *roc-vim-trouble*
 
 Nothing happened~
 |:RocPlugins| says whether a plugin is running. If it is not there at all,
@@ -175,6 +214,11 @@ moment. Set |g:roc_auto_build| to 0 and build with |:RocBuild| instead.
 
 My plugin cannot find the platform~
 The `platform "platform/main.roc"` path is relative to the plugin's own file.
-`setup.sh` puts a link at `~/.vim/roc/platform` for exactly this.
+`setup.sh` puts links at `~/.vim/roc/platform` and
+`~/.vim/roc/platform-inprocess` for exactly this.
+
+It says the plugin is in-process, but this Vim has no +roc~
+Either build a Vim that has it (`vim-patch/build-vim.sh`), or change the
+plugin to the channel shape: `app [main!]` with its own `Vim.receive!` loop.
 
  vim:tw=78:ts=8:noet:ft=help:norl:

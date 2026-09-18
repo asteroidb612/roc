@@ -9,7 +9,9 @@ let s:save_cpo = &cpo
 set cpo&vim
 
 let s:plugins = {}
-let s:next_id = 1
+" Channel plugins get ids of their own; in-process plugins are keyed by the
+" handle roc_load() returned, which is a small number, so keep them apart.
+let s:next_id = 1000
 let s:log_limit = 500
 " Logs outlive the job they came from, so a plugin that died still has its last
 " words in :RocLog. Keyed by plugin name.
@@ -53,7 +55,24 @@ function! roc#name_of(source) abort
 endfunction
 
 function! roc#executable_for(source) abort
-  return expand(g:roc_build_dir) . '/' . roc#name_of(a:source)
+  let base = expand(g:roc_build_dir) . '/' . roc#name_of(a:source)
+  if roc#is_inprocess(a:source)
+    " An in-process plugin is built as a shared library, which Vim loads.
+    return base . (has('mac') ? '.dylib' : '.so')
+  endif
+  return base
+endfunction
+
+" A plugin that runs inside Vim provides a model and a handler, so its app
+" header exposes `plugin`. One that runs as a job provides `main!`.
+function! roc#is_inprocess(source) abort
+  for line in readfile(a:source, '', 50)
+    let trimmed = substitute(line, '^\s*', '', '')
+    if trimmed =~# '^app\>'
+      return trimmed =~# '\<plugin\>' ? 1 : 0
+    endif
+  endfor
+  return 0
 endfunction
 
 function! s:is_stale(source, executable) abort
@@ -73,6 +92,10 @@ function! s:is_stale(source, executable) abort
   return 0
 endfunction
 
+function! s:glibc_target() abort
+  return (has('arm64') || system('uname -m') =~# 'aarch64') ? 'arm64glibc' : 'x64glibc'
+endfunction
+
 " Compile one source. Returns the executable's path, or '' if the build failed.
 function! roc#build_source(source) abort
   let executable = roc#executable_for(a:source)
@@ -89,6 +112,10 @@ function! roc#build_source(source) abort
   let command = [g:roc_command, 'build', a:source, '--output=' . executable]
   if !empty(g:roc_build_target)
     call add(command, '--target=' . g:roc_build_target)
+  elseif roc#is_inprocess(a:source) && !has('mac')
+    " A plugin Vim loads has to match the libc Vim is using, and Roc builds
+    " for static musl by default. On a musl system, set g:roc_build_target.
+    call add(command, '--target=' . s:glibc_target())
   endif
 
   redraw
@@ -148,6 +175,10 @@ function! s:running_id(name) abort
 endfunction
 
 function! s:is_running(plugin) abort
+  if get(a:plugin, 'transport', 'channel') ==# 'inprocess'
+    " It is loaded into this process: it is running for as long as it is here.
+    return 1
+  endif
   return has_key(a:plugin, 'job') && job_status(a:plugin.job) ==# 'run'
 endfunction
 
@@ -172,6 +203,12 @@ function! s:start_source(source) abort
     endif
   endif
 
+  " A plugin built against the in-process platform is a shared library for
+  " Vim to load; one built against the channel platform is a program to run.
+  if roc#is_inprocess(a:source)
+    return s:start_inprocess(a:source, name, executable)
+  endif
+
   let id = s:next_id
   let s:next_id += 1
 
@@ -186,6 +223,7 @@ function! s:start_source(source) abort
         \ 'name': name,
         \ 'source': a:source,
         \ 'executable': executable,
+        \ 'transport': 'channel',
         \ 'started': localtime(),
         \ }
   let s:plugins[id] = plugin
@@ -211,6 +249,36 @@ function! s:start_source(source) abort
   return id
 endfunction
 
+" Load a plugin into Vim's own process. Needs a Vim with +roc.
+function! s:start_inprocess(source, name, library) abort
+  if !has('roc')
+    call s:warn(a:name . ' is an in-process plugin, but this Vim has no +roc'
+          \ . ' (see roc-vim/vim-patch/README.md)')
+    return 0
+  endif
+
+  " The plugin registers its subscriptions while roc_load() runs its init, in
+  " the autocommand group named after the handle it is given. Clearing the
+  " group afterwards would throw those away, so stopping a plugin is what
+  " clears it.
+  let handle = roc_load(a:library)
+  if handle == 0
+    return 0
+  endif
+
+  let s:plugins[handle] = {
+        \ 'id': handle,
+        \ 'name': a:name,
+        \ 'source': a:source,
+        \ 'executable': a:library,
+        \ 'transport': 'inprocess',
+        \ 'handle': handle,
+        \ 'started': localtime(),
+        \ }
+  let s:names[handle] = a:name
+  return handle
+endfunction
+
 function! roc#stop(which) abort
   for [id, plugin] in items(s:plugins)
     if empty(a:which) || plugin.name ==# a:which
@@ -228,12 +296,16 @@ function! s:stop_plugin(id) abort
     autocmd!
   augroup END
   execute 'silent! augroup! roc_plugin_' . a:id
-  if has_key(plugin, 'channel') && ch_status(plugin.channel) ==# 'open'
-    " Closing the channel is the plugin's cue to shut down on its own.
-    call ch_close(plugin.channel)
-  endif
-  if s:is_running(plugin)
-    call job_stop(plugin.job)
+  if get(plugin, 'transport', 'channel') ==# 'inprocess'
+    call roc_unload(plugin.handle)
+  else
+    if has_key(plugin, 'channel') && ch_status(plugin.channel) ==# 'open'
+      " Closing the channel is the plugin's cue to shut down on its own.
+      call ch_close(plugin.channel)
+    endif
+    if has_key(plugin, 'job') && job_status(plugin.job) ==# 'run'
+      call job_stop(plugin.job)
+    endif
   endif
   for command in keys(get(plugin, 'commands', {}))
     execute 'silent! delcommand ' . command
@@ -272,7 +344,15 @@ endfunction
 " Send an event. Does not wait for the plugin to deal with it.
 function! roc#notify(id, name, data) abort
   let plugin = get(s:plugins, a:id, {})
-  if empty(plugin) || !has_key(plugin, 'channel') || ch_status(plugin.channel) !=# 'open'
+  if empty(plugin)
+    return
+  endif
+  if get(plugin, 'transport', 'channel') ==# 'inprocess'
+    " A call, not a message: the plugin runs here and now.
+    call roc_event(plugin.handle, a:name, a:data)
+    return
+  endif
+  if !has_key(plugin, 'channel') || ch_status(plugin.channel) !=# 'open'
     return
   endif
   call ch_sendexpr(plugin.channel, {'event': a:name, 'data': a:data})
@@ -284,7 +364,14 @@ function! roc#request(id, name, data, ...) abort
   let timeout = a:0 > 0 ? a:1 : 2000
   let default = a:0 > 1 ? a:2 : ''
   let plugin = get(s:plugins, a:id, {})
-  if empty(plugin) || !has_key(plugin, 'channel') || ch_status(plugin.channel) !=# 'open'
+  if empty(plugin)
+    return default
+  endif
+  if get(plugin, 'transport', 'channel') ==# 'inprocess'
+    let answer = roc_event(plugin.handle, a:name, a:data)
+    return answer is# 0 ? default : answer
+  endif
+  if !has_key(plugin, 'channel') || ch_status(plugin.channel) !=# 'open'
     return default
   endif
   let answer = ch_evalexpr(
@@ -310,6 +397,18 @@ function! roc#ask(name, event, data, ...) abort
   return call('roc#request', [id, a:event, a:data] + a:000)
 endfunction
 
+" A 'completefunc' that asks a plugin for matches. Vim waits for the answer, so
+" this only works with a plugin loaded into Vim (|roc-vim-inprocess|); set
+" g:roc_complete_plugin to its name.
+function! roc#complete(findstart, base) abort
+  let name = get(g:, 'roc_complete_plugin', '')
+  if empty(name)
+    return a:findstart ? -1 : []
+  endif
+  return roc#ask(name, 'complete', {'findstart': a:findstart, 'base': a:base},
+        \ 2000, a:findstart ? -1 : [])
+endfunction
+
 " What a plugin is told about whatever just happened.
 function! roc#context() abort
   return {
@@ -327,9 +426,19 @@ endfunction
 " What plugins ask Vim to do for them
 " ---------------------------------------------------------------------------
 
+" Every plugin owns an autocommand group, so stopping it takes its
+" subscriptions with it. Starting a plugin makes the group; this is here for
+" a plugin loaded by hand with roc_load().
+function! s:ensure_group(id) abort
+  execute 'augroup roc_plugin_' . a:id
+    " Leave whatever is already registered alone.
+  augroup END
+endfunction
+
 " Vim.subscribe! - one autocommand per event, in the plugin's own group.
 function! roc#subscribe(id, events) abort
   let id = str2nr(a:id)
+  call s:ensure_group(id)
   for spec in a:events
     let parts = split(spec, ' ')
     if empty(parts)
@@ -449,21 +558,27 @@ function! roc#status() abort
     return
   endif
 
-  echo printf('%-20s %-9s %-7s %s', 'PLUGIN', 'STATUS', 'PID', 'SOURCE')
+  echo printf('%-20s %-11s %-9s %-7s %s', 'PLUGIN', 'HOW', 'STATUS', 'PID', 'SOURCE')
   let seen = {}
   for [id, plugin] in items(s:plugins)
     let seen[plugin.name] = 1
-    let info = job_info(plugin.job)
-    echo printf('%-20s %-9s %-7s %s',
-          \ plugin.name,
-          \ job_status(plugin.job),
-          \ string(get(info, 'process', '-')),
-          \ fnamemodify(plugin.source, ':~'))
+    if get(plugin, 'transport', 'channel') ==# 'inprocess'
+      echo printf('%-20s %-11s %-9s %-7s %s',
+            \ plugin.name, 'in-process', 'loaded', '-',
+            \ fnamemodify(plugin.source, ':~'))
+    else
+      let info = job_info(plugin.job)
+      echo printf('%-20s %-11s %-9s %-7s %s',
+            \ plugin.name, 'channel', job_status(plugin.job),
+            \ string(get(info, 'process', '-')),
+            \ fnamemodify(plugin.source, ':~'))
+    endif
   endfor
   for source in sources
     let name = roc#name_of(source)
     if !has_key(seen, name)
-      echo printf('%-20s %-9s %-7s %s', name, 'stopped', '-', fnamemodify(source, ':~'))
+      echo printf('%-20s %-11s %-9s %-7s %s', name, '-', 'stopped', '-',
+            \ fnamemodify(source, ':~'))
     endif
   endfor
 endfunction

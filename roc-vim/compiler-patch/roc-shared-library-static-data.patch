@@ -1,0 +1,210 @@
+diff --git a/src/backend/dev/ObjectFileCompiler.zig b/src/backend/dev/ObjectFileCompiler.zig
+index 4eac919..ab8797c 100644
+--- a/src/backend/dev/ObjectFileCompiler.zig
++++ b/src/backend/dev/ObjectFileCompiler.zig
+@@ -233,8 +233,9 @@ pub const ObjectFileCompiler = struct {
+         self: *ObjectFileCompiler,
+         static_data_exports: []const StaticDataExport,
+         target: RocTarget,
++        options: ObjectWriter.ObjectOptions,
+     ) CompilationError!CompilationResult {
+-        return compileStaticDataObjectBytes(self.allocator, static_data_exports, target);
++        return compileStaticDataObjectBytes(self.allocator, static_data_exports, target, options);
+     }
+ 
+     /// Emit a data-only object and write it to a path.
+@@ -244,8 +245,9 @@ pub const ObjectFileCompiler = struct {
+         target: RocTarget,
+         output_path: []const u8,
+         roc_ctx: CoreCtx,
++        options: ObjectWriter.ObjectOptions,
+     ) CompilationError!void {
+-        var result = try self.compileStaticDataObject(static_data_exports, target);
++        var result = try self.compileStaticDataObject(static_data_exports, target, options);
+         defer result.deinit();
+ 
+         writeFileWindowsAvSafe(roc_ctx.std_io, output_path, result.object_bytes) catch |err| {
+@@ -655,6 +657,7 @@ fn compileWithCodeGen(
+             .line_relocs = dwarf_sections.line_relocs,
+             .info_relocs = dwarf_sections.info_relocs,
+         },
++        .{},
+         &output,
+     ) catch |err| switch (err) {
+         error.OutOfMemory => return CompilationError.OutOfMemory,
+@@ -883,6 +886,7 @@ fn compileStaticDataObjectBytes(
+     allocator: Allocator,
+     static_data_exports: []const StaticDataExport,
+     target: RocTarget,
++    options: ObjectWriter.ObjectOptions,
+ ) CompilationError!CompilationResult {
+     if (static_data_exports.len == 0) {
+         return CompilationError.NoEntrypoints;
+@@ -925,6 +929,7 @@ fn compileStaticDataObjectBytes(
+         rodata_relocations.items,
+         &.{},
+         null,
++        options,
+         &output,
+     ) catch |err| switch (err) {
+         error.OutOfMemory => return CompilationError.OutOfMemory,
+diff --git a/src/backend/dev/ObjectWriter.zig b/src/backend/dev/ObjectWriter.zig
+index ba569c8..8da2314 100644
+--- a/src/backend/dev/ObjectWriter.zig
++++ b/src/backend/dev/ObjectWriter.zig
+@@ -77,7 +77,7 @@ pub fn generateObjectFileWithDebug(
+         .symbol = table.indices.get(rel.target_symbol_name).?,
+         .addend = rel.addend,
+     };
+-    return generateIndexedObjectFileWithDebug(allocator, target, code, rodata, symbols, indexed.items, indexed_data, &.{}, debug, output);
++    return generateIndexedObjectFileWithDebug(allocator, target, code, rodata, symbols, indexed.items, indexed_data, &.{}, debug, .{}, output);
+ }
+ 
+ /// Write producer-resolved relocations. Every target indexes the supplied symbol column.
+@@ -87,6 +87,16 @@ pub fn generateObjectFileWithDebug(
+ /// without a symbol of their own. Windows unwind tables must cover those
+ /// ranges too: a frame whose return address has no `.pdata` entry is walked
+ /// as a leaf, which corrupts every frame above it.
++/// How an object file should be written, beyond its contents.
++pub const ObjectOptions = struct {
++    /// Put the data section in a writable segment. Data that points at other
++    /// data needs this in a shared library: the dynamic linker rewrites those
++    /// pointers at load time, which a read-only section does not allow.
++    ///
++    /// Only ELF honours this today; Mach-O and COFF ignore it.
++    writable_data: bool = false,
++};
++
+ pub fn generateIndexedObjectFileWithDebug(
+     allocator: Allocator,
+     target: RocTarget,
+@@ -97,6 +107,7 @@ pub fn generateIndexedObjectFileWithDebug(
+     rodata_relocations: []const IndexedDataRelocation,
+     unwind_functions: []const object.coff.FunctionInfo,
+     debug: ?DebugSections,
++    options: ObjectOptions,
+     output: *std.ArrayList(u8),
+ ) (Allocator.Error || error{UnsupportedTarget})!void {
+     const target_indices = try allocator.alloc(u32, symbols.len);
+@@ -117,6 +128,7 @@ pub fn generateIndexedObjectFileWithDebug(
+ 
+             elf.setCode(code);
+             elf.setRodata(rodata);
++            elf.rodata_writable = options.writable_data;
+             if (debug) |d| elf.setDebugSections(d.line, d.abbrev, d.info, d.line_relocs, d.info_relocs);
+ 
+             // Add symbols
+@@ -613,7 +625,7 @@ test "x86_64 windows object covers recorded helper ranges without symbols" {
+     }) |case| {
+         var output: std.ArrayList(u8) = .empty;
+         defer output.deinit(allocator);
+-        try generateIndexedObjectFileWithDebug(allocator, .x64win, code, &.{}, symbols, &.{}, &.{}, case.recorded, null, &output);
++        try generateIndexedObjectFileWithDebug(allocator, .x64win, code, &.{}, symbols, &.{}, &.{}, case.recorded, null, .{}, &output);
+ 
+         // No .rdata, so .pdata is the second section header; each x64 entry is 12 bytes.
+         const num_sections = std.mem.readInt(u16, output.items[2..4], .little);
+@@ -978,7 +990,7 @@ test "indexed object relocations preserve targets through format symbol ordering
+         };
+         var output: std.ArrayList(u8) = .empty;
+         defer output.deinit(allocator);
+-        try generateIndexedObjectFileWithDebug(allocator, target, &([_]u8{0} ** 32), &([_]u8{0} ** 32), &symbols, &relocations, &data_relocations, &.{}, null, &output);
++        try generateIndexedObjectFileWithDebug(allocator, target, &([_]u8{0} ** 32), &([_]u8{0} ** 32), &symbols, &relocations, &data_relocations, &.{}, null, .{}, &output);
+         const decoded = try TestObjectTables.read(target, output.items);
+         const expected = [_][]const u8{ "local_data", "external_function", "local_data", "global_data" };
+         try std.testing.expectEqual(@as(usize, 4), decoded.text.len / decoded.relocation_size);
+diff --git a/src/backend/dev/object/elf.zig b/src/backend/dev/object/elf.zig
+index 4127285..77562b7 100644
+--- a/src/backend/dev/object/elf.zig
++++ b/src/backend/dev/object/elf.zig
+@@ -35,6 +35,7 @@ const ELF = struct {
+     const SHT_RELA = 4;
+ 
+     // Section flags
++    const SHF_WRITE = 0x1;
+     const SHF_ALLOC = 0x2;
+     const SHF_EXECINSTR = 0x4;
+     const SHF_INFO_LINK = 0x40;
+@@ -179,6 +180,11 @@ pub const ElfWriter = struct {
+     data: std.ArrayList(u8),
+     rodata: []const u8,
+ 
++    /// Whether .rodata goes in a writable segment. A shared library needs that
++    /// for data holding pointers to other data: the dynamic linker rewrites
++    /// those pointers at load time, and it cannot write a read-only section.
++    rodata_writable: bool,
++
+     // Symbol table
+     symbols: std.ArrayList(Symbol),
+ 
+@@ -216,6 +222,7 @@ pub const ElfWriter = struct {
+             .text = &.{},
+             .data = .empty,
+             .rodata = &.{},
++            .rodata_writable = false,
+             .symbols = .empty,
+             .text_relocs = .empty,
+             .rodata_relocs = .empty,
+@@ -612,7 +619,7 @@ pub const ElfWriter = struct {
+         const shdr_rodata = Elf64_Shdr{
+             .sh_name = shname_rodata,
+             .sh_type = ELF.SHT_PROGBITS,
+-            .sh_flags = ELF.SHF_ALLOC,
++            .sh_flags = if (self.rodata_writable) ELF.SHF_ALLOC | ELF.SHF_WRITE else ELF.SHF_ALLOC,
+             .sh_addr = 0,
+             .sh_offset = rodata_offset,
+             .sh_size = self.rodata.len,
+diff --git a/src/cli/main.zig b/src/cli/main.zig
+index de9a52b..5842625 100644
+--- a/src/cli/main.zig
++++ b/src/cli/main.zig
+@@ -9039,6 +9039,7 @@ fn appendBoxyRuntimeLinkInputs(
+     object_files: *std.array_list.Managed([]const u8),
+     scratch_dir: []const u8,
+     target: RocTarget,
++    link_type: roc_target.OutputKind,
+     lir_result: *const lir.Program.Result,
+ ) CliMainError!void {
+     const runtime_bytes = BoxyRuntimeObjects.forTarget(target) orelse {
+@@ -9071,7 +9072,13 @@ fn appendBoxyRuntimeLinkInputs(
+ 
+     const sidecar_path = try std.fs.path.join(ctx.arena, &.{ scratch_dir, "roc_boxy_sidecar.o" });
+     var sidecar_compiler = backend.ObjectFileCompiler.init(ctx.gpa);
+-    sidecar_compiler.compileStaticDataObjectAndWrite(&sidecar_exports, target, sidecar_path, ctx.coreCtx()) catch {
++    sidecar_compiler.compileStaticDataObjectAndWrite(
++        &sidecar_exports,
++        target,
++        sidecar_path,
++        ctx.coreCtx(),
++        .{ .writable_data = link_type == .shared },
++    ) catch {
+         return error.NativeCompilationFailed;
+     };
+ 
+@@ -10272,6 +10279,9 @@ fn rocBuildLlvm(ctx: *CliCtx, args: cli_args.BuildArgs) CliMainError!BuildResult
+                 target,
+                 static_obj_path,
+                 ctx.coreCtx(),
++                // A shared library's data is relocated at load time, which the
++                // dynamic linker can only do in a writable section.
++                .{ .writable_data = link_type == .shared },
+             );
+             static_data_obj_path = static_obj_path;
+         }
+@@ -10291,7 +10301,7 @@ fn rocBuildLlvm(ctx: *CliCtx, args: cli_args.BuildArgs) CliMainError!BuildResult
+             }
+         }
+         if (lirResultNeedsBoxyRuntime(&lowered.lir_result)) {
+-            try appendBoxyRuntimeLinkInputs(ctx, &object_files, app_object.artifact_dir, target, &lowered.lir_result);
++            try appendBoxyRuntimeLinkInputs(ctx, &object_files, app_object.artifact_dir, target, link_type, &lowered.lir_result);
+         }
+         reporter.end();
+ 
+@@ -10734,7 +10744,7 @@ fn rocBuildNative(ctx: *CliCtx, args: cli_args.BuildArgs) CliMainError!BuildResu
+     // entrypoints, call `roc_boxy_init_embedded`. Link the boxy runtime object
+     // and a data object carrying the sidecar those symbols read.
+     if (uses_boxy) {
+-        try appendBoxyRuntimeLinkInputs(ctx, &object_files, build_scratch_dir, target, &lowered.lir_result);
++        try appendBoxyRuntimeLinkInputs(ctx, &object_files, build_scratch_dir, target, link_type, &lowered.lir_result);
+     }
+     reporter.end();
+ 
