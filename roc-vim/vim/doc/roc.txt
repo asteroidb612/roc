@@ -82,6 +82,17 @@ A `--target` to pass to `roc build`, such as `x64glibc`. Default: "" - Roc's
 own default for channel plugins, and the system libc for in-process ones. On a
 musl system such as Alpine, set this to `x64musl`.
 
+                                                   *g:roc_embed_library*
+The engine library holding the Roc compiler. Default: "" (not set)
+With it, an in-process plugin is compiled inside Vim and run from its source:
+no build step, no artifact. See |roc-vim-source|. >
+    let g:roc_embed_library = '~/src/roc-vim/embed/libroc_vim_embed.so'
+<
+                                                   *g:roc_prefer_source*
+Use |g:roc_embed_library| when it is set. Default: 1
+Turning it off builds in-process plugins into shared libraries instead, which
+runs them as compiled code rather than through the interpreter.
+
 ==============================================================================
 4. Writing a plugin                                      *roc-vim-writing*
 
@@ -194,8 +205,24 @@ leaks whatever it was holding (Vim itself survives, and the plugin stops). Work
 that takes time belongs in a channel plugin.
 
 These functions are what the Vimscript layer uses; you should not need them:
-`roc_load({path})`, `roc_event({handle}, {name} [, {data}])`,
-`roc_unload({handle})`.
+`roc_load({path})`, `roc_load_source({path})`,
+`roc_event({handle}, {name} [, {data}])`, `roc_unload({handle})`.
+
+Plugins from source                                      *roc-vim-source*
+
+Set |g:roc_embed_library| and an in-process plugin is not built at all: Vim
+loads that library once - it holds the Roc compiler - and hands it the `.roc`
+file, which it compiles in Vim's own memory and runs through Roc's
+interpreter. |:RocPlugins| shows such a plugin as `source`, and saving the file
+recompiles it in place.
+
+The same plugin file works either way. Building it (|g:roc_prefer_source| = 0)
+runs it as machine code, which is faster for a plugin that computes; loading
+the source removes the build step, which is nicer while writing one.
+
+The library is large, being a compiler, and is loaded the first time a source
+plugin starts, so a Vim that never uses one never maps it. See
+`roc-vim/embed/README.md` for how to build it.
 
 ==============================================================================
 8. Troubleshooting                                       *roc-vim-trouble*
@@ -216,6 +243,10 @@ My plugin cannot find the platform~
 The `platform "platform/main.roc"` path is relative to the plugin's own file.
 `setup.sh` puts links at `~/.vim/roc/platform` and
 `~/.vim/roc/platform-inprocess` for exactly this.
+
+It compiles slowly when I save it~
+Source mode compiles the plugin inside Vim, so Vim is busy while it does. If
+that gets in the way, build the plugin instead: |g:roc_prefer_source| = 0.
 
 It says the plugin is in-process, but this Vim has no +roc~
 Either build a Vim that has it (`vim-patch/build-vim.sh`), or change the

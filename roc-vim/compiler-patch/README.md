@@ -1,4 +1,28 @@
-# A Roc compiler that can build plugins Vim loads
+# Roc compiler patches
+
+Two patches live here. `roc-shared-library-static-data.patch` lets Roc build a
+real program as a shared library, which in-process plugins are.
+`roc-embed-library.patch` adds an embedding library, which is what lets Vim
+compile and run a plugin from its source without building anything.
+
+Both are against roc-lang/roc commit
+`1d982dca644aaddf1cc858f8580fadccf025358b` (2026-09-18) and need Zig 0.16.
+
+```sh
+git clone https://github.com/roc-lang/roc.git
+cd roc
+git checkout 1d982dca644aaddf1cc858f8580fadccf025358b
+git apply /path/to/roc-shared-library-static-data.patch
+git apply /path/to/roc-embed-library.patch
+
+zig build roc                                                     # the compiler
+zig build roc-embed -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe   # the library
+```
+
+Point Vim at the compiler with `let g:roc_command = '/path/to/roc'`, and build
+the engine around the library with `roc-vim/embed/build.sh`.
+
+## roc-shared-library-static-data.patch
 
 In-process plugins are shared libraries, which Roc knows how to build
 (`output: Shared` in a platform's `targets:` section). One thing stops it
@@ -29,18 +53,26 @@ It is 43 lines across four files, made against roc-lang/roc commit
 | `src/backend/dev/ObjectFileCompiler.zig` | pass it through to the static-data object |
 | `src/cli/main.zig` | set it when `link_type == .shared` |
 
-## Building a Roc with it
+## roc-embed-library.patch
 
-```sh
-git clone https://github.com/roc-lang/roc.git
-cd roc
-git checkout 1d982dca644aaddf1cc858f8580fadccf025358b
-git apply /path/to/roc-shared-library-static-data.patch
-zig build roc          # needs Zig 0.16
-./zig-out/bin/roc version
+`zig build roc-embed` builds `libroc_embed.a`: the compiler, plus a C API for
+running Roc source inside another program. It is a new file
+(`src/embed/main.zig`, ~600 lines) and a build target; nothing existing
+changes, so a compiler built from this patch behaves exactly as before.
+
+The library follows the embedding sequence the compiler already documents in
+`src/echo_platform/runner.zig`: build the checked artifacts, lower them to LIR,
+materialize the static data, and run an entrypoint through the interpreter with
+a `RocOps` the host supplies. What it adds is the C boundary around that, and
+binding the platform's hosted functions to the host's own C functions by name:
+
+```c
+void *program = roc_embed_open(path, len, ctx, resolve_hosted, &error);
+int   ordinal = roc_embed_entrypoint(program, "roc_vim_handle", 14);
+roc_embed_call(program, ordinal, args, &result, &error);
 ```
 
-Point Vim at it with `let g:roc_command = '/path/to/roc'`.
+`roc-vim/embed/` is one consumer; nothing in the library knows about Vim.
 
 ## Notes
 

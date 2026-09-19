@@ -35,6 +35,13 @@ let g:roc_reload_on_write = get(g:, 'roc_reload_on_write', 1)
 " Pass a specific --target to `roc build`, e.g. 'x64glibc'. Empty means the
 " default for this machine.
 let g:roc_build_target = get(g:, 'roc_build_target', '')
+" The engine library holding the Roc compiler. With it, a Vim that has +roc
+" runs in-process plugins straight from their source: nothing is built and
+" nothing is cached. See roc-vim/embed/.
+let g:roc_embed_library = get(g:, 'roc_embed_library', '')
+" Use the compiler in the engine library when it is available. Turning this
+" off builds in-process plugins into shared libraries instead.
+let g:roc_prefer_source = get(g:, 'roc_prefer_source', 1)
 
 command! -bar RocPlugins call roc#status()
 command! -bar RocLog call roc#log()

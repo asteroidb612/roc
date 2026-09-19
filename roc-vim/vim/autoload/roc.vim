@@ -165,6 +165,12 @@ function! roc#start(which) abort
   endfor
 endfunction
 
+" Whether a plugin runs inside Vim, however it got here.
+function! s:in_vim(plugin) abort
+  let how = get(a:plugin, 'transport', 'channel')
+  return how ==# 'inprocess' || how ==# 'source'
+endfunction
+
 function! s:running_id(name) abort
   for [id, plugin] in items(s:plugins)
     if plugin.name ==# a:name && s:is_running(plugin)
@@ -175,7 +181,7 @@ function! s:running_id(name) abort
 endfunction
 
 function! s:is_running(plugin) abort
-  if get(a:plugin, 'transport', 'channel') ==# 'inprocess'
+  if s:in_vim(a:plugin)
     " It is loaded into this process: it is running for as long as it is here.
     return 1
   endif
@@ -186,6 +192,16 @@ function! s:start_source(source) abort
   let name = roc#name_of(a:source)
   if s:running_id(name)
     return 0
+  endif
+
+  " A plugin that runs inside Vim can be run from its source, with the
+  " compiler loaded into Vim rather than run as a command. Nothing is built
+  " and nothing is cached, so this is tried first.
+  if roc#is_inprocess(a:source) && s:can_load_source()
+    let handle = s:start_from_source(a:source, name)
+    if handle
+      return handle
+    endif
   endif
 
   let executable = roc#executable_for(a:source)
@@ -249,6 +265,35 @@ function! s:start_source(source) abort
   return id
 endfunction
 
+" Whether this Vim can compile Roc source itself: a +roc Vim, plus the engine
+" library that holds the compiler.
+function! s:can_load_source() abort
+  if !g:roc_prefer_source || !has('roc') || !exists('*roc_load_source')
+    return 0
+  endif
+  return !empty(get(g:, 'roc_embed_library', ''))
+endfunction
+
+" Compile and load a plugin from its source, with no build step at all.
+function! s:start_from_source(source, name) abort
+  let handle = roc_load_source(fnamemodify(a:source, ':p'))
+  if handle == 0
+    return 0
+  endif
+
+  let s:plugins[handle] = {
+        \ 'id': handle,
+        \ 'name': a:name,
+        \ 'source': a:source,
+        \ 'executable': '',
+        \ 'transport': 'source',
+        \ 'handle': handle,
+        \ 'started': localtime(),
+        \ }
+  let s:names[handle] = a:name
+  return handle
+endfunction
+
 " Load a plugin into Vim's own process. Needs a Vim with +roc.
 function! s:start_inprocess(source, name, library) abort
   if !has('roc')
@@ -296,7 +341,7 @@ function! s:stop_plugin(id) abort
     autocmd!
   augroup END
   execute 'silent! augroup! roc_plugin_' . a:id
-  if get(plugin, 'transport', 'channel') ==# 'inprocess'
+  if s:in_vim(plugin)
     call roc_unload(plugin.handle)
   else
     if has_key(plugin, 'channel') && ch_status(plugin.channel) ==# 'open'
@@ -347,7 +392,7 @@ function! roc#notify(id, name, data) abort
   if empty(plugin)
     return
   endif
-  if get(plugin, 'transport', 'channel') ==# 'inprocess'
+  if s:in_vim(plugin)
     " A call, not a message: the plugin runs here and now.
     call roc_event(plugin.handle, a:name, a:data)
     return
@@ -367,7 +412,7 @@ function! roc#request(id, name, data, ...) abort
   if empty(plugin)
     return default
   endif
-  if get(plugin, 'transport', 'channel') ==# 'inprocess'
+  if s:in_vim(plugin)
     let answer = roc_event(plugin.handle, a:name, a:data)
     return answer is# 0 ? default : answer
   endif
@@ -562,9 +607,11 @@ function! roc#status() abort
   let seen = {}
   for [id, plugin] in items(s:plugins)
     let seen[plugin.name] = 1
-    if get(plugin, 'transport', 'channel') ==# 'inprocess'
+    if s:in_vim(plugin)
       echo printf('%-20s %-11s %-9s %-7s %s',
-            \ plugin.name, 'in-process', 'loaded', '-',
+            \ plugin.name,
+            \ get(plugin, 'transport') ==# 'source' ? 'source' : 'in-process',
+            \ 'loaded', '-',
             \ fnamemodify(plugin.source, ':~'))
     else
       let info = job_info(plugin.job)

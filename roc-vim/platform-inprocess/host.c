@@ -281,6 +281,14 @@ int roc_vim_abi_version(void) {
     return ROC_VIM_ABI_VERSION;
 }
 
+/*
+ * A plugin compiled to a shared library calls the entrypoints the Roc compiler
+ * linked in. The source-loading engine (roc-vim/embed/engine.c) includes this
+ * file for its hosted functions but reaches the same entrypoints through the
+ * interpreter, so it defines ROC_VIM_EMBEDDED and supplies its own.
+ */
+#ifndef ROC_VIM_EMBEDDED
+
 int roc_vim_plugin_init(const roc_vim_api_T *api, int handle) {
     if (api == NULL || api->abi_version != ROC_VIM_ABI_VERSION) {
         return 1;
@@ -325,6 +333,8 @@ char *roc_vim_plugin_event(const char *json, size_t len, size_t *out_len) {
     pending_reply_len = 0;
     return reply;
 }
+
+#endif /* !ROC_VIM_EMBEDDED */
 
 void roc_vim_plugin_free(char *ptr) {
     free(ptr);

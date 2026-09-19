@@ -1,0 +1,697 @@
+diff --git a/build.zig b/build.zig
+index 76d4cdf..270ab75 100755
+--- a/build.zig
++++ b/build.zig
+@@ -4727,6 +4727,45 @@ pub fn build(b: *std.Build) void {
+ 
+         const echo_native_install = b.addInstallArtifact(echo_native_exe, .{});
+ 
++        // roc-embed: a static library that compiles and runs Roc source inside
++        // another program. Hosts link it, supply their platform's hosted
++        // functions by name, and call the app's entrypoints through the
++        // interpreter. See src/embed/main.zig.
++        const embed_lib = b.addLibrary(.{
++            .name = "roc_embed",
++            .root_module = b.createModule(.{
++                .root_source_file = b.path("src/embed/main.zig"),
++                .target = target,
++                .optimize = optimize,
++                .link_libc = true,
++                // Hosts commonly load this from a shared library.
++                .pic = true,
++            }),
++            .linkage = .static,
++        });
++        configureBackend(embed_lib, target);
++        // A host links this with its own C compiler, which will not know about
++        // Zig's compiler-rt, so the archive carries it.
++        embed_lib.bundle_compiler_rt = true;
++        embed_lib.root_module.addImport("build_options", roc_modules.build_options);
++        embed_lib.root_module.addImport("backend", roc_modules.backend);
++        embed_lib.root_module.addImport("base", roc_modules.base);
++        embed_lib.root_module.addImport("builtins", roc_modules.builtins);
++        embed_lib.root_module.addImport("can", roc_modules.can);
++        embed_lib.root_module.addImport("check", roc_modules.check);
++        embed_lib.root_module.addImport("compile", roc_modules.compile);
++        embed_lib.root_module.addImport("eval", roc_modules.eval);
++        embed_lib.root_module.addImport("layout", roc_modules.layout);
++        embed_lib.root_module.addImport("lir", roc_modules.lir);
++        embed_lib.root_module.addImport("reporting", roc_modules.reporting);
++        embed_lib.root_module.addImport("roc_target", roc_modules.roc_target);
++        embed_lib.root_module.addImport("compiled_builtins", compiled_builtins_module);
++        embed_lib.step.dependOn(&write_compiled_builtins.step);
++
++        const embed_install = b.addInstallArtifact(embed_lib, .{});
++        const build_embed_step = b.step("roc-embed", "Build libroc_embed.a, for embedding the compiler in another program");
++        build_embed_step.dependOn(&embed_install.step);
++
+         const run_echo_step = b.step("run-echo", "Run the native echo platform driver (debug helper for echo.wasm)");
+         const run_echo_cmd = b.addRunArtifact(echo_native_exe);
+         if (run_args.len != 0) run_echo_cmd.addArgs(run_args);
+diff --git a/src/embed/main.zig b/src/embed/main.zig
+new file mode 100644
+index 0000000..d3f6e17
+--- /dev/null
++++ b/src/embed/main.zig
+@@ -0,0 +1,641 @@
++//! Embedding the Roc compiler in another program.
++//!
++//! This library compiles a `.roc` application in the calling process and calls
++//! its platform entrypoints through the interpreter, so a host can run Roc
++//! source directly instead of linking a compiled artifact. It is what the
++//! playground does in the browser, exposed as a C API for native hosts.
++//!
++//! The host supplies its platform's hosted functions by name through a
++//! resolver callback. They are ordinary C functions with the signatures the
++//! platform's `hosted` section declares, exactly as they would be in a linked
++//! host, and the interpreter calls them through the same ABI.
++//!
++//! Nothing here is specific to any one platform.
++
++const std = @import("std");
++const builtin = @import("builtin");
++const backend = @import("backend");
++const base = @import("base");
++const builtins = @import("builtins");
++const check = @import("check");
++const compile = @import("compile");
++const eval = @import("eval");
++const layout = @import("layout");
++const lir = @import("lir");
++const reporting = @import("reporting");
++const roc_target = @import("roc_target");
++
++const Allocator = std.mem.Allocator;
++
++// libc's over-aligned allocation, which std.c does not declare.
++extern fn aligned_alloc(alignment: usize, size: usize) callconv(.c) ?*anyopaque;
++const BuildEnv = compile.BuildEnv;
++const CheckedArtifact = check.CheckedArtifact;
++const Interpreter = eval.LirInterpreter;
++const RocOps = builtins.host_abi.RocOps;
++const HostedFn = builtins.host_abi.HostedFn;
++
++/// Bumped whenever the C API below changes shape. A host checks it before use.
++const ABI_VERSION: c_int = 1;
++
++/// Resolve one hosted symbol to the C function that implements it. Returning
++/// null means the host does not provide it, which fails the load rather than
++/// crashing later at the call.
++const ResolveFn = *const fn (ctx: ?*anyopaque, symbol: [*]const u8, symbol_len: usize) callconv(.c) ?*anyopaque;
++
++var gpa_state: std.heap.DebugAllocator(.{ .thread_safe = true }) = .init;
++
++fn gpa() Allocator {
++    return if (builtin.mode == .Debug) gpa_state.allocator() else std.heap.smp_allocator;
++}
++
++/// One compiled program, kept alive between calls.
++///
++/// The checked artifacts the lowered program borrows live in `build_env`, so
++/// everything here is torn down together and in order.
++const Engine = struct {
++    allocator: Allocator,
++    build_env: *BuildEnv,
++    import_views: []const CheckedArtifact.ImportedModuleView,
++    relation_views: []const CheckedArtifact.ImportedModuleView,
++    lir_roots: []const CheckedArtifact.RootRequest,
++    lowered: lir.CheckedPipeline.LoweredProgram,
++    static_data_exports: []backend.StaticDataExport,
++    static_data: eval.InterpreterStaticData,
++    interpreter: Interpreter,
++    host: *Host,
++    entrypoints: []Entrypoint,
++    /// The last failure, owned here so a host can read it after a failed call.
++    last_error: ?[]u8,
++
++    const Entrypoint = struct {
++        name: []u8,
++        proc: lir.LirProcSpecId,
++        arg_layouts: []layout.Idx,
++        /// Byte offset of each argument in the buffer the caller packs, in the
++        /// order the entrypoint declares them.
++        arg_offsets: []u32,
++        args_size: usize,
++        ret_size: usize,
++        ret_layout: layout.Idx,
++    };
++};
++
++/// The RocOps a program runs against: allocation, diagnostics, and the table
++/// of hosted functions the interpreter dispatches through.
++const Host = struct {
++    allocator: Allocator,
++    ops: RocOps,
++    hosted_fns: []HostedFn,
++    /// Set when the program crashed, for the host to report.
++    crash_message: ?[]u8,
++
++    fn create(allocator: Allocator, hosted_fns: []HostedFn) Allocator.Error!*Host {
++        const self = try allocator.create(Host);
++        self.* = .{
++            .allocator = allocator,
++            .ops = undefined,
++            .hosted_fns = hosted_fns,
++            .crash_message = null,
++        };
++        self.ops = .{
++            .env = @ptrCast(self),
++            .roc_alloc = rocAlloc,
++            .roc_dealloc = rocDealloc,
++            .roc_realloc = rocRealloc,
++            .roc_dbg = rocDbg,
++            .roc_expect_failed = rocExpectFailed,
++            .roc_crashed = rocCrashed,
++            .hosted_fns = .{
++                .count = @intCast(hosted_fns.len),
++                .fns = if (hosted_fns.len == 0)
++                    builtins.host_abi.emptyHostedFunctions().fns
++                else
++                    hosted_fns.ptr,
++            },
++        };
++        return self;
++    }
++
++    fn destroy(self: *Host) void {
++        if (self.crash_message) |message| self.allocator.free(message);
++        self.allocator.free(self.hosted_fns);
++        self.allocator.destroy(self);
++    }
++
++    fn of(ops: *RocOps) *Host {
++        return @ptrCast(@alignCast(ops.env));
++    }
++
++    // Allocation goes straight through libc, so a host's own C code can free
++    // what Roc allocated (and the other way round) exactly as it would with a
++    // linked platform: the pointer roc_alloc returns is the allocation base.
++    fn rocAlloc(ops: *RocOps, length: usize, alignment: usize) callconv(.c) ?*anyopaque {
++        _ = ops;
++        const size = @max(length, 1);
++        if (alignment <= 16) return std.c.malloc(size);
++        const rounded = std.mem.alignForward(usize, size, alignment);
++        return aligned_alloc(alignment, rounded);
++    }
++
++    fn rocDealloc(ops: *RocOps, ptr: *anyopaque, alignment: usize) callconv(.c) void {
++        _ = ops;
++        _ = alignment;
++        std.c.free(ptr);
++    }
++
++    fn rocRealloc(ops: *RocOps, ptr: *anyopaque, new_length: usize, alignment: usize) callconv(.c) ?*anyopaque {
++        _ = ops;
++        if (alignment <= 16) return std.c.realloc(ptr, @max(new_length, 1));
++        // An over-aligned block cannot be grown in place by libc, so move it.
++        const rounded = std.mem.alignForward(usize, @max(new_length, 1), alignment);
++        const fresh = aligned_alloc(alignment, rounded) orelse return null;
++        @memcpy(@as([*]u8, @ptrCast(fresh))[0..new_length], @as([*]const u8, @ptrCast(ptr))[0..new_length]);
++        std.c.free(ptr);
++        return fresh;
++    }
++
++    fn rocDbg(ops: *RocOps, bytes: [*]const u8, length: usize) callconv(.c) void {
++        _ = ops;
++        std.debug.print("roc dbg: {s}\n", .{bytes[0..length]});
++    }
++
++    fn rocExpectFailed(ops: *RocOps, bytes: [*]const u8, length: usize) callconv(.c) void {
++        _ = ops;
++        std.debug.print("roc expect failed: {s}\n", .{bytes[0..length]});
++    }
++
++    fn rocCrashed(ops: *RocOps, bytes: [*]const u8, length: usize) callconv(.c) void {
++        const self = Host.of(ops);
++        if (self.crash_message == null) {
++            self.crash_message = self.allocator.dupe(u8, bytes[0..length]) catch null;
++        }
++    }
++};
++
++// =============================================================================
++// Building a program
++// =============================================================================
++
++const OpenError = error{ CompilationFailed, EntrypointNotFound, MissingHostedFunction } || Allocator.Error;
++
++fn compileProgram(
++    allocator: Allocator,
++    path: []const u8,
++    resolver_ctx: ?*anyopaque,
++    resolver: ResolveFn,
++    problems: *std.ArrayList(u8),
++) OpenError!*Engine {
++    // A library has no `main`, so it takes the process-wide single-threaded
++    // I/O implementation rather than one handed down from an entry point.
++    const std_io = std.Io.Threaded.global_single_threaded.io();
++
++    const cwd = std.Io.Dir.cwd().realPathFileAlloc(std_io, ".", allocator) catch return error.CompilationFailed;
++    defer allocator.free(cwd);
++
++    const build_env = try allocator.create(BuildEnv);
++    errdefer allocator.destroy(build_env);
++    build_env.* = BuildEnv.init(
++        allocator,
++        .single_threaded,
++        1,
++        roc_target.RocTarget.detectNative(),
++        cwd,
++        std_io,
++    ) catch return error.CompilationFailed;
++    errdefer build_env.deinit();
++    build_env.enableDefaultCacheManager(false) catch {};
++
++    build_env.build(path) catch {
++        try renderDiagnostics(build_env, problems);
++        return error.CompilationFailed;
++    };
++    try renderDiagnostics(build_env, problems);
++    if (!build_env.executable_artifacts_finalized) return error.CompilationFailed;
++
++    const root_artifact = build_env.executableRootCheckedArtifact();
++    const import_views = try build_env.collectImportedArtifactViews(allocator, root_artifact);
++    errdefer allocator.free(import_views);
++    const relation_views = try build_env.collectRelationArtifactViews(allocator, root_artifact);
++    errdefer allocator.free(relation_views);
++
++    const lir_roots = try lir.CheckedPipeline.selectPlatformEntrypointRoots(
++        allocator,
++        root_artifact.root_requests.runtime_requests,
++    );
++    errdefer allocator.free(lir_roots);
++
++    var lowered = lir.CheckedPipeline.lowerCheckedModulesToLir(
++        allocator,
++        .{
++            .root = CheckedArtifact.loweringViewWithRelations(root_artifact, relation_views),
++            .imports = import_views,
++        },
++        .{
++            .requests = lir_roots,
++            // String literals and other constants the interpreter reads.
++            .include_internal_static_data = true,
++        },
++        .{ .target_usize = base.target.TargetUsize.native },
++    ) catch return error.CompilationFailed;
++    errdefer lowered.deinit();
++
++    const static_data_exports = eval.buildStaticDataForWidth(
++        allocator,
++        .{
++            .root = CheckedArtifact.loweringViewWithRelations(root_artifact, relation_views),
++            .imports = import_views,
++        },
++        &lowered,
++        lowered.target_usize,
++        .{},
++    ) catch return error.CompilationFailed;
++    errdefer eval.deinitStaticData(allocator, static_data_exports);
++
++    // Hosted functions are dispatched by index, and the index is the one LIR
++    // recorded for the symbol, so the table is filled by name.
++    const hosted_fns = try resolveHostedFunctions(allocator, &lowered, resolver_ctx, resolver, problems);
++    errdefer allocator.free(hosted_fns);
++
++    const host = try Host.create(allocator, hosted_fns);
++    errdefer host.destroy();
++
++    var static_data = try eval.InterpreterStaticData.init(
++        allocator,
++        static_data_exports,
++        lowered.lir_result.static_data_values.items.len,
++    );
++    errdefer static_data.deinit();
++
++    const engine = try allocator.create(Engine);
++    errdefer allocator.destroy(engine);
++
++    engine.* = .{
++        .allocator = allocator,
++        .build_env = build_env,
++        .import_views = import_views,
++        .relation_views = relation_views,
++        .lir_roots = lir_roots,
++        .lowered = lowered,
++        .static_data_exports = static_data_exports,
++        .static_data = static_data,
++        .interpreter = undefined,
++        .host = host,
++        .entrypoints = undefined,
++        .last_error = null,
++    };
++
++    engine.interpreter = Interpreter.initWithBoxyTables(
++        allocator,
++        &engine.lowered.lir_result.store,
++        &engine.lowered.lir_result.layouts,
++        Interpreter.BoxyTables.fromResult(&engine.lowered.lir_result),
++        &engine.host.ops,
++    ) catch return error.CompilationFailed;
++    engine.static_data.install(&engine.interpreter);
++
++    engine.entrypoints = try collectEntrypoints(allocator, &engine.lowered, root_artifact);
++    return engine;
++}
++
++fn renderDiagnostics(build_env: *BuildEnv, problems: *std.ArrayList(u8)) Allocator.Error!void {
++    var diagnostics: std.Io.Writer.Allocating = .init(gpa());
++    defer diagnostics.deinit();
++    // Plain text: a host embedding this shows the message wherever it shows
++    // its own errors, which is rarely a colour terminal.
++    const config = reporting.ReportingConfig{
++        .color_preference = .never,
++        .is_tty = false,
++        .render_target = .color_terminal,
++        .max_line_width = 80,
++        .show_line_numbers = true,
++        .context_lines = 2,
++        .validate_utf8 = true,
++        .max_message_bytes = 4096,
++    };
++    _ = build_env.renderDiagnostics(&diagnostics.writer, config) catch {};
++    try problems.appendSlice(gpa(), diagnostics.written());
++}
++
++fn resolveHostedFunctions(
++    allocator: Allocator,
++    lowered: *const lir.CheckedPipeline.LoweredProgram,
++    resolver_ctx: ?*anyopaque,
++    resolver: ResolveFn,
++    problems: *std.ArrayList(u8),
++) OpenError![]HostedFn {
++    const store = &lowered.lir_result.store;
++
++    var count: usize = 0;
++    for (store.getProcSpecs()) |spec| {
++        const hosted = spec.hosted orelse continue;
++        count = @max(count, @as(usize, hosted.dispatch_index) + 1);
++    }
++
++    const fns = try allocator.alloc(HostedFn, @max(count, 1));
++    errdefer allocator.free(fns);
++    var filled = try allocator.alloc(bool, @max(count, 1));
++    defer allocator.free(filled);
++    @memset(filled, false);
++
++    for (store.getProcSpecs()) |spec| {
++        const hosted = spec.hosted orelse continue;
++        const index: usize = hosted.dispatch_index;
++        if (filled[index]) continue;
++        const symbol = store.getString(hosted.symbol);
++        const target = resolver(resolver_ctx, symbol.ptr, symbol.len) orelse {
++            problems.print(gpa(), "the host does not provide the hosted function {s}\n", .{symbol}) catch {};
++            return error.MissingHostedFunction;
++        };
++        const target_fn: builtins.host_abi.HostedFn = @ptrCast(@alignCast(target));
++        fns[index] = builtins.host_abi.hostedFn(target_fn);
++        filled[index] = true;
++    }
++
++    // Dispatch indices come from the platform's `hosted` section, so a program
++    // that calls only some of them leaves gaps. Nothing can reach those slots,
++    // but they must hold something rather than whatever was on the heap.
++    for (filled[0..count], 0..) |was_filled, index| {
++        if (!was_filled) fns[index] = builtins.host_abi.hostedFn(&unboundHostedFn);
++    }
++    return fns;
++}
++
++/// Stands in for a hosted function this program never calls. Reaching it would
++/// mean the dispatch table and the program disagree.
++fn unboundHostedFn(_: *anyopaque, _: *anyopaque, _: *anyopaque) callconv(.c) void {
++    @panic("roc-embed: a hosted function that the program does not call was called");
++}
++
++fn collectEntrypoints(
++    allocator: Allocator,
++    lowered: *const lir.CheckedPipeline.LoweredProgram,
++    root_artifact: *const CheckedArtifact.CheckedModuleArtifact,
++) Allocator.Error![]Engine.Entrypoint {
++    const store = &lowered.lir_result.store;
++    const layouts = &lowered.lir_result.layouts;
++    const root_procs = lowered.lir_result.root_procs.items;
++    const root_metadata = lowered.lir_result.root_metadata.items;
++
++    const entrypoints = try allocator.alloc(Engine.Entrypoint, root_procs.len);
++    var built: usize = 0;
++    errdefer {
++        for (entrypoints[0..built]) |entry| {
++            allocator.free(entry.name);
++            allocator.free(entry.arg_layouts);
++            allocator.free(entry.arg_offsets);
++        }
++        allocator.free(entrypoints);
++    }
++
++    for (root_procs, root_metadata, entrypoints) |root_proc, metadata, *entry| {
++        const symbol = symbolFor(root_artifact, metadata) orelse "";
++        const proc = store.getProcSpec(root_proc);
++        const arg_ids = store.getLocalSpan(proc.args);
++        const arg_layouts = try allocator.alloc(layout.Idx, arg_ids.len);
++        errdefer allocator.free(arg_layouts);
++        for (0..arg_ids.len) |i| {
++            const local_id = lir.LirStore.GuardedList.at(arg_ids, i);
++            arg_layouts[i] = store.getLocal(local_id).layout_idx;
++        }
++
++        const arg_offsets = try allocator.alloc(u32, arg_ids.len);
++        errdefer allocator.free(arg_offsets);
++        const args_size = argumentOffsets(layouts, arg_layouts, arg_offsets);
++
++        entry.* = .{
++            .name = try allocator.dupe(u8, symbol),
++            .proc = root_proc,
++            .arg_layouts = arg_layouts,
++            .arg_offsets = arg_offsets,
++            .args_size = args_size,
++            .ret_size = layouts.layoutSizeAlign(layouts.getLayout(proc.ret_layout)).size,
++            .ret_layout = proc.ret_layout,
++        };
++        built += 1;
++    }
++    return entrypoints;
++}
++
++fn symbolFor(
++    root_artifact: *const CheckedArtifact.CheckedModuleArtifact,
++    metadata: anytype,
++) ?[]const u8 {
++    const root = root_artifact.lookupRootRequestByOrder(metadata.order) orelse return null;
++    return root_artifact.providedEntrypointName(root);
++}
++
++/// Where each argument sits in the buffer the caller packs.
++///
++/// This mirrors what the interpreter expects: arguments are placed in order of
++/// descending alignment, ties broken by their position in the signature, each
++/// one aligned to its own alignment.
++fn argumentOffsets(
++    layouts: *const layout.Store,
++    arg_layouts: []const layout.Idx,
++    offsets_out: []u32,
++) usize {
++    const count = arg_layouts.len;
++    if (count == 0) return 0;
++
++    var order_buf: [32]usize = undefined;
++    const order = if (count <= order_buf.len) order_buf[0..count] else return 0;
++    for (0..count) |i| order[i] = i;
++
++    for (0..count) |i| {
++        for (i + 1..count) |j| {
++            const i_align = layouts.layoutSizeAlign(layouts.getLayout(arg_layouts[order[i]])).alignment.toByteUnits();
++            const j_align = layouts.layoutSizeAlign(layouts.getLayout(arg_layouts[order[j]])).alignment.toByteUnits();
++            if (j_align > i_align or (j_align == i_align and order[j] < order[i])) {
++                const tmp = order[i];
++                order[i] = order[j];
++                order[j] = tmp;
++            }
++        }
++    }
++
++    var offset: usize = 0;
++    for (order) |original| {
++        const sa = layouts.layoutSizeAlign(layouts.getLayout(arg_layouts[original]));
++        offset = std.mem.alignForward(usize, offset, sa.alignment.toByteUnits());
++        offsets_out[original] = @intCast(offset);
++        offset += sa.size;
++    }
++    return offset;
++}
++
++fn destroyEngine(engine: *Engine) void {
++    const allocator = engine.allocator;
++    for (engine.entrypoints) |entry| {
++        allocator.free(entry.name);
++        allocator.free(entry.arg_layouts);
++        allocator.free(entry.arg_offsets);
++    }
++    allocator.free(engine.entrypoints);
++    engine.interpreter.deinit();
++    engine.static_data.deinit();
++    engine.host.destroy();
++    eval.deinitStaticData(allocator, engine.static_data_exports);
++    engine.lowered.deinit();
++    allocator.free(engine.lir_roots);
++    allocator.free(engine.relation_views);
++    allocator.free(engine.import_views);
++    engine.build_env.deinit();
++    allocator.destroy(engine.build_env);
++    if (engine.last_error) |message| allocator.free(message);
++    allocator.destroy(engine);
++}
++
++// =============================================================================
++// The C API
++// =============================================================================
++
++export fn roc_embed_abi_version() callconv(.c) c_int {
++    return ABI_VERSION;
++}
++
++/// Compile the app at `path` and prepare it to be called.
++///
++/// On failure this returns null and, when `error_out` is given, puts an owned
++/// message there for the host to show and then free with
++/// `roc_embed_free_error`.
++export fn roc_embed_open(
++    path_ptr: [*]const u8,
++    path_len: usize,
++    resolver_ctx: ?*anyopaque,
++    resolver: ResolveFn,
++    error_out: ?*?[*:0]u8,
++) callconv(.c) ?*anyopaque {
++    if (error_out) |slot| slot.* = null;
++    const allocator = gpa();
++
++    var problems: std.ArrayList(u8) = .empty;
++    defer problems.deinit(allocator);
++
++    const engine = compileProgram(allocator, path_ptr[0..path_len], resolver_ctx, resolver, &problems) catch |err| {
++        if (error_out) |slot| {
++            slot.* = ownedMessage(allocator, &problems, switch (err) {
++                error.OutOfMemory => "ran out of memory while compiling",
++                error.CompilationFailed => "could not compile",
++                error.EntrypointNotFound => "the program has no platform entrypoints",
++                error.MissingHostedFunction => "the host does not provide every hosted function",
++            });
++        }
++        return null;
++    };
++    return @ptrCast(engine);
++}
++
++export fn roc_embed_close(handle: ?*anyopaque) callconv(.c) void {
++    const engine: *Engine = @ptrCast(@alignCast(handle orelse return));
++    destroyEngine(engine);
++}
++
++/// The ordinal of the entrypoint with this symbol name, or -1.
++export fn roc_embed_entrypoint(handle: ?*anyopaque, symbol_ptr: [*]const u8, symbol_len: usize) callconv(.c) c_int {
++    const engine: *Engine = @ptrCast(@alignCast(handle orelse return -1));
++    const wanted = symbol_ptr[0..symbol_len];
++    for (engine.entrypoints, 0..) |entry, index| {
++        if (std.mem.eql(u8, entry.name, wanted)) return @intCast(index);
++    }
++    return -1;
++}
++
++export fn roc_embed_entrypoint_count(handle: ?*anyopaque) callconv(.c) c_int {
++    const engine: *Engine = @ptrCast(@alignCast(handle orelse return 0));
++    return @intCast(engine.entrypoints.len);
++}
++
++/// How big a buffer the arguments need, and where each one goes in it.
++export fn roc_embed_args_size(handle: ?*anyopaque, ordinal: c_int) callconv(.c) usize {
++    const entry = entrypointAt(handle, ordinal) orelse return 0;
++    return entry.args_size;
++}
++
++export fn roc_embed_arg_offset(handle: ?*anyopaque, ordinal: c_int, index: usize) callconv(.c) usize {
++    const entry = entrypointAt(handle, ordinal) orelse return 0;
++    if (index >= entry.arg_offsets.len) return 0;
++    return entry.arg_offsets[index];
++}
++
++export fn roc_embed_arg_count(handle: ?*anyopaque, ordinal: c_int) callconv(.c) usize {
++    const entry = entrypointAt(handle, ordinal) orelse return 0;
++    return entry.arg_offsets.len;
++}
++
++export fn roc_embed_ret_size(handle: ?*anyopaque, ordinal: c_int) callconv(.c) usize {
++    const entry = entrypointAt(handle, ordinal) orelse return 0;
++    return entry.ret_size;
++}
++
++/// Call an entrypoint. `args` points at a buffer packed as the offsets above
++/// describe, and `ret` at one `roc_embed_ret_size` bytes long.
++///
++/// Returns 0 on success. On failure it returns 1 and, when `error_out` is
++/// given, puts an owned message there.
++export fn roc_embed_call(
++    handle: ?*anyopaque,
++    ordinal: c_int,
++    args: ?*anyopaque,
++    ret: ?*anyopaque,
++    error_out: ?*?[*:0]u8,
++) callconv(.c) c_int {
++    if (error_out) |slot| slot.* = null;
++    const engine: *Engine = @ptrCast(@alignCast(handle orelse return 1));
++    const entry = entrypointAt(handle, ordinal) orelse {
++        if (error_out) |slot| slot.* = dupeZ(engine.allocator, "no such entrypoint");
++        return 1;
++    };
++
++    if (engine.host.crash_message) |message| {
++        engine.allocator.free(message);
++        engine.host.crash_message = null;
++    }
++
++    _ = engine.interpreter.eval(.{
++        .proc_id = entry.proc,
++        .arg_layouts = entry.arg_layouts,
++        .ret_layout = entry.ret_layout,
++        .arg_ptr = args,
++        .ret_ptr = ret,
++    }) catch |err| {
++        if (error_out) |slot| {
++            const message = switch (err) {
++                error.Crash => engine.host.crash_message orelse engine.interpreter.getCrashMessage() orelse "the program crashed",
++                error.RuntimeError => engine.interpreter.getRuntimeErrorMessage() orelse "runtime error",
++                error.DivisionByZero => "division by zero",
++                else => @errorName(err),
++            };
++            slot.* = dupeZ(engine.allocator, message);
++        }
++        return 1;
++    };
++    return 0;
++}
++
++export fn roc_embed_free_error(message: ?[*:0]u8) callconv(.c) void {
++    const text = message orelse return;
++    const allocator = gpa();
++    allocator.free(std.mem.span(text));
++}
++
++fn entrypointAt(handle: ?*anyopaque, ordinal: c_int) ?*Engine.Entrypoint {
++    const engine: *Engine = @ptrCast(@alignCast(handle orelse return null));
++    if (ordinal < 0) return null;
++    const index: usize = @intCast(ordinal);
++    if (index >= engine.entrypoints.len) return null;
++    return &engine.entrypoints[index];
++}
++
++fn ownedMessage(allocator: Allocator, problems: *std.ArrayList(u8), fallback: []const u8) ?[*:0]u8 {
++    if (problems.items.len > 0) {
++        return dupeZ(allocator, problems.items);
++    }
++    return dupeZ(allocator, fallback);
++}
++
++fn dupeZ(allocator: Allocator, text: []const u8) ?[*:0]u8 {
++    const copy = allocator.allocSentinel(u8, text.len, 0) catch return null;
++    @memcpy(copy, text);
++    return copy.ptr;
++}

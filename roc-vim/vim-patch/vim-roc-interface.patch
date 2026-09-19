@@ -1,9 +1,9 @@
 diff --git a/src/if_roc.c b/src/if_roc.c
 new file mode 100644
-index 0000000..7e8d9d9
+index 0000000..1e91919
 --- /dev/null
 +++ b/src/if_roc.c
-@@ -0,0 +1,414 @@
+@@ -0,0 +1,584 @@
 +/* vi:set ts=8 sts=4 sw=4 noet:
 + *
 + * VIM - Vi IMproved	by Bram Moolenaar
@@ -25,8 +25,14 @@ index 0000000..7e8d9d9
 + * and expressions, and JSON for values. That keeps this interface independent
 + * of how the Roc compiler lays out its types.
 + *
++ * A plugin can also be loaded from its source, without being built first. That
++ * needs an engine library holding the Roc compiler, named by
++ * g:roc_embed_library; Vim loads it the first time it is asked for and then
++ * hands it .roc files to compile and run in this process.
++ *
 + * The functions this adds:
-+ *	roc_load({path})		load a plugin, returns a handle
++ *	roc_load({path})		load a built plugin, returns a handle
++ *	roc_load_source({path})		compile and load a plugin from source
 + *	roc_event({handle}, {name} [, {data}])	tell a plugin something happened
 + *	roc_unload({handle})		unload a plugin
 + */
@@ -65,7 +71,8 @@ index 0000000..7e8d9d9
 +
 +typedef struct
 +{
-+    void	*lib;		// dlopen() handle, NULL for a free slot
++    void	*lib;		// dlopen() handle of a built plugin
++    void	*source;	// what the engine returned for a source plugin
 +    char_u	*path;
 +    int		busy;		// inside a call into this plugin
 +
@@ -74,6 +81,25 @@ index 0000000..7e8d9d9
 +    void	(*plugin_free)(char *ptr);
 +    void	(*plugin_deinit)(void);
 +} roc_plugin_T;
++
++// A slot is free when it holds neither kind of plugin.
++#define ROC_SLOT_IN_USE(p) ((p)->lib != NULL || (p)->source != NULL)
++
++/*
++ * The engine library: the Roc compiler, loaded on demand so a Vim that never
++ * runs a source plugin never pays for it.
++ */
++static void	*roc_engine;
++static int	(*roc_engine_abi_version)(void);
++static void	*(*roc_engine_load)(const roc_vim_api_T *api, int handle,
++				    const char *path, size_t path_len, char **error_out);
++static char	*(*roc_engine_event)(void *plugin, const roc_vim_api_T *api,
++				     const char *json, size_t len, size_t *out_len);
++static void	(*roc_engine_free)(char *ptr);
++static void	(*roc_engine_free_error)(char *message);
++static void	(*roc_engine_unload)(void *plugin);
++
++#define ROC_VIM_SOURCE_ABI_VERSION 1
 +
 +#define ROC_MAX_PLUGINS 64
 +
@@ -87,7 +113,7 @@ index 0000000..7e8d9d9
 +{
 +    if (handle < 1 || handle > ROC_MAX_PLUGINS)
 +	return NULL;
-+    if (roc_plugins[handle - 1].lib == NULL)
++    if (!ROC_SLOT_IN_USE(&roc_plugins[handle - 1]))
 +	return NULL;
 +    return &roc_plugins[handle - 1];
 +}
@@ -203,11 +229,20 @@ index 0000000..7e8d9d9
 +    static void
 +roc_unload_plugin(roc_plugin_T *plugin)
 +{
-+    if (plugin->lib == NULL)
++    if (!ROC_SLOT_IN_USE(plugin))
 +	return;
-+    if (plugin->plugin_deinit != NULL && !plugin->busy)
-+	plugin->plugin_deinit();
-+    dlclose(plugin->lib);
++    if (plugin->source != NULL)
++    {
++	if (roc_engine_unload != NULL && !plugin->busy)
++	    roc_engine_unload(plugin->source);
++	plugin->source = NULL;
++    }
++    else
++    {
++	if (plugin->plugin_deinit != NULL && !plugin->busy)
++	    plugin->plugin_deinit();
++	dlclose(plugin->lib);
++    }
 +    plugin->lib = NULL;
 +    VIM_CLEAR(plugin->path);
 +    plugin->busy = FALSE;
@@ -251,7 +286,7 @@ index 0000000..7e8d9d9
 +    path = tv_get_string(&argvars[0]);
 +
 +    for (slot = 0; slot < ROC_MAX_PLUGINS; ++slot)
-+	if (roc_plugins[slot].lib == NULL)
++	if (!ROC_SLOT_IN_USE(&roc_plugins[slot]))
 +	    break;
 +    if (slot == ROC_MAX_PLUGINS)
 +    {
@@ -299,6 +334,132 @@ index 0000000..7e8d9d9
 +    {
 +	roc_unload_plugin(plugin);
 +	semsg(_(e_roc_plugin_str_failed_to_start), path);
++	return;
++    }
++
++    rettv->vval.v_number = slot + 1;
++}
++
++/*
++ * Load the engine library the first time a source plugin is asked for. It
++ * holds the Roc compiler; g:roc_embed_library says where it is.
++ */
++    static int
++roc_engine_ready(void)
++{
++    typval_T	*value;
++    char_u	*path = NULL;
++
++    if (roc_engine != NULL)
++	return TRUE;
++
++    // Reading the option through eval keeps this out of Vim's option table.
++    // eval_expr() writes into the expression it is given, so it gets a copy.
++    {
++	char_u *expression = vim_strsave((char_u *)"get(g:, 'roc_embed_library', '')");
++
++	if (expression == NULL)
++	    return FALSE;
++	value = eval_expr(expression, NULL);
++	vim_free(expression);
++    }
++    if (value != NULL)
++    {
++	char_u *text = tv_get_string(value);
++
++	if (text != NULL && *text != NUL)
++	    path = vim_strsave(text);
++	free_tv(value);
++    }
++    if (path == NULL)
++    {
++	emsg(_(e_roc_engine_library_not_set));
++	return FALSE;
++    }
++
++    roc_engine = dlopen((char *)path, RTLD_NOW | RTLD_LOCAL);
++    if (roc_engine == NULL)
++    {
++	semsg(_(e_could_not_load_roc_engine_str), dlerror());
++	vim_free(path);
++	return FALSE;
++    }
++    vim_free(path);
++
++    roc_engine_abi_version = (int (*)(void))
++				    dlsym(roc_engine, "roc_vim_source_abi_version");
++    roc_engine_load = (void *(*)(const roc_vim_api_T *, int, const char *, size_t, char **))
++				    dlsym(roc_engine, "roc_vim_source_load");
++    roc_engine_event = (char *(*)(void *, const roc_vim_api_T *, const char *, size_t, size_t *))
++				    dlsym(roc_engine, "roc_vim_source_event");
++    roc_engine_free = (void (*)(char *))dlsym(roc_engine, "roc_vim_source_free");
++    roc_engine_free_error = (void (*)(char *))dlsym(roc_engine, "roc_vim_source_free_error");
++    roc_engine_unload = (void (*)(void *))dlsym(roc_engine, "roc_vim_source_unload");
++
++    if (roc_engine_abi_version == NULL
++	    || roc_engine_abi_version() != ROC_VIM_SOURCE_ABI_VERSION
++	    || roc_engine_load == NULL
++	    || roc_engine_event == NULL
++	    || roc_engine_unload == NULL)
++    {
++	dlclose(roc_engine);
++	roc_engine = NULL;
++	emsg(_(e_roc_engine_was_built_for_another_vim));
++	return FALSE;
++    }
++    return TRUE;
++}
++
++/*
++ * "roc_load_source({path})": compile a plugin from its source and load it,
++ * returning a handle to it. Returns 0 if it could not be loaded.
++ */
++    void
++f_roc_load_source(typval_T *argvars, typval_T *rettv)
++{
++    char_u		*path;
++    int			slot;
++    roc_plugin_T	*plugin;
++    char		*error = NULL;
++
++    rettv->v_type = VAR_NUMBER;
++    rettv->vval.v_number = 0;
++
++    if (check_for_string_arg(argvars, 0) == FAIL)
++	return;
++    path = tv_get_string(&argvars[0]);
++
++    if (!roc_engine_ready())
++	return;
++
++    for (slot = 0; slot < ROC_MAX_PLUGINS; ++slot)
++	if (!ROC_SLOT_IN_USE(&roc_plugins[slot]))
++	    break;
++    if (slot == ROC_MAX_PLUGINS)
++    {
++	emsg(_(e_too_many_roc_plugins));
++	return;
++    }
++
++    plugin = &roc_plugins[slot];
++    plugin->path = vim_strsave(path);
++    plugin->busy = TRUE;
++    plugin->source = roc_engine_load(&roc_api, slot + 1,
++					     (char *)path, STRLEN(path), &error);
++    plugin->busy = FALSE;
++
++    if (plugin->source == NULL)
++    {
++	VIM_CLEAR(plugin->path);
++	if (error != NULL)
++	{
++	    // The compiler's own report: show it as it came.
++	    semsg("%s", error);
++	    if (roc_engine_free_error != NULL)
++		roc_engine_free_error(error);
++	}
++	else
++	    semsg(_(e_roc_plugin_str_failed_to_start), path);
 +	return;
 +    }
 +
@@ -365,7 +526,11 @@ index 0000000..7e8d9d9
 +	return;
 +
 +    plugin->busy = TRUE;
-+    answer = plugin->plugin_event((char *)json, STRLEN(json), &answer_len);
++    if (plugin->source != NULL)
++	answer = roc_engine_event(plugin->source, &roc_api,
++					  (char *)json, STRLEN(json), &answer_len);
++    else
++	answer = plugin->plugin_event((char *)json, STRLEN(json), &answer_len);
 +    plugin->busy = FALSE;
 +    vim_free(json);
 +
@@ -374,7 +539,12 @@ index 0000000..7e8d9d9
 +	js_read_T   reader;
 +	char_u	    *answer_copy = roc_copy_nul_terminated(answer, answer_len);
 +
-+	if (plugin->plugin_free != NULL)
++	if (plugin->source != NULL)
++	{
++	    if (roc_engine_free != NULL)
++		roc_engine_free(answer);
++	}
++	else if (plugin->plugin_free != NULL)
 +	    plugin->plugin_free(answer);
 +	if (answer_copy != NULL)
 +	{
@@ -420,13 +590,14 @@ index 0000000..7e8d9d9
 +#endif // FEAT_ROC
 diff --git a/src/proto/if_roc.pro b/src/proto/if_roc.pro
 new file mode 100644
-index 0000000..82bb6e4
+index 0000000..d7a4729
 --- /dev/null
 +++ b/src/proto/if_roc.pro
-@@ -0,0 +1,6 @@
+@@ -0,0 +1,7 @@
 +/* if_roc.c */
 +void roc_end(void);
 +void f_roc_load(typval_T *argvars, typval_T *rettv);
++void f_roc_load_source(typval_T *argvars, typval_T *rettv);
 +void f_roc_event(typval_T *argvars, typval_T *rettv);
 +void f_roc_unload(typval_T *argvars, typval_T *rettv);
 +/* vim: set ft=c : */
@@ -461,10 +632,10 @@ index 9e91a9f..ad1d535 100644
  	$(CCC) -o $@ insexpand.c
  
 diff --git a/src/errors.h b/src/errors.h
-index fdfe3a1..e1b8310 100644
+index fdfe3a1..8d39cd5 100644
 --- a/src/errors.h
 +++ b/src/errors.h
-@@ -3832,3 +3832,19 @@ EXTERN char e_not_started_with_stdio_channel[]
+@@ -3832,3 +3832,25 @@ EXTERN char e_not_started_with_stdio_channel[]
  EXTERN char e_cannot_open_stdio_channel[]
  	INIT(= N_("E1583: Cannot open stdio channel"));
  #endif
@@ -483,12 +654,18 @@ index fdfe3a1..e1b8310 100644
 +	INIT(= N_("E1589: No such Roc plugin"));
 +EXTERN char e_roc_plugin_str_is_already_running[]
 +	INIT(= N_("E1590: Roc plugin is already running: %s"));
++EXTERN char e_roc_engine_library_not_set[]
++	INIT(= N_("E1591: g:roc_embed_library is not set, so Roc source cannot be compiled"));
++EXTERN char e_could_not_load_roc_engine_str[]
++	INIT(= N_("E1592: Could not load the Roc engine library: %s"));
++EXTERN char e_roc_engine_was_built_for_another_vim[]
++	INIT(= N_("E1593: The Roc engine library was built for a different Vim"));
 +#endif
 diff --git a/src/evalfunc.c b/src/evalfunc.c
-index 043b966..46930fe 100644
+index 043b966..701e9b5 100644
 --- a/src/evalfunc.c
 +++ b/src/evalfunc.c
-@@ -2863,6 +2863,30 @@ static const funcentry_T global_functions[] =
+@@ -2863,6 +2863,38 @@ static const funcentry_T global_functions[] =
  			ret_string,	    f_resolve},
      {"reverse",		1, 1, FEARG_1,	    arg1_reverse,
  			ret_first_arg,	    f_reverse},
@@ -508,6 +685,14 @@ index 043b966..46930fe 100644
 +	    NULL
 +#endif
 +			},
++    {"roc_load_source",	1, 1, FEARG_1,	    arg1_string,
++			ret_number,
++#ifdef FEAT_ROC
++	    f_roc_load_source
++#else
++	    NULL
++#endif
++			},
 +    {"roc_unload",	1, 1, FEARG_1,	    arg1_number,
 +			ret_number,
 +#ifdef FEAT_ROC
@@ -519,7 +704,7 @@ index 043b966..46930fe 100644
      {"round",		1, 1, FEARG_1,	    arg1_float_or_nr,
  			ret_float,	    f_round},
      {"rubyeval",	1, 1, FEARG_1,	    arg1_string,
-@@ -7593,6 +7617,13 @@ f_has(typval_T *argvars, typval_T *rettv)
+@@ -7593,6 +7625,13 @@ f_has(typval_T *argvars, typval_T *rettv)
  		1
  #else
  		0

@@ -32,26 +32,30 @@ loop! = |writes|
     }
 ```
 
-## Two ways to run a plugin
+## Three ways to run a plugin
 
-|  | **Channel** (`platform/`) | **In-process** (`platform-inprocess/`) |
-| --- | --- | --- |
-| The plugin is | a program Vim runs as a job | a shared library Vim loads with `dlopen()` |
-| Effects are | messages over a JSON channel | direct calls into Vim |
-| Needs | stock Vim 8+, released Roc | Vim with [`+roc`](vim-patch/), Roc with [one patch](compiler-patch/) |
-| Shape | your own loop on `receive!` | `init!` and `handle!`; Vim keeps the loop |
-| Slow work | fine, Vim carries on | freezes Vim while it runs |
-| A crash | kills the plugin only | is caught, but leaks what it held |
-| Answering Vimscript | a round trip, with a timeout | a function call |
+|  | **Channel** (`platform/`) | **In-process, built** (`platform-inprocess/`) | **In-process, from source** (`embed/`) |
+| --- | --- | --- | --- |
+| The plugin is | a program Vim runs as a job | a shared library Vim loads with `dlopen()` | a `.roc` file Vim compiles in its own memory |
+| Effects are | messages over a JSON channel | direct calls into Vim | direct calls into Vim |
+| Runs as | compiled machine code | compiled machine code | Roc's interpreter |
+| Build step | `roc build`, run by Vim | `roc build`, run by Vim | none at all |
+| Needs | stock Vim 8+, released Roc | Vim with [`+roc`](vim-patch/), [patched Roc](compiler-patch/) | the same, plus the [engine library](embed/) |
+| Slow work | fine, Vim carries on | freezes Vim while it runs | freezes Vim while it runs |
+| A crash | kills the plugin only | is caught; the plugin stops | is caught; the plugin stops |
+| Answering Vimscript | a round trip, with a timeout | a function call | a function call |
 
-Both are in this repository and both work; they share the API, the Vim-side
-plugin manager, and most of the docs. **Channel is the default**: it works with
-a Vim and a Roc you already have. In-process is what to reach for when a plugin
-has to answer Vim synchronously — a `completefunc`, an `'operatorfunc'`, an
-expression mapping — or when the round trips add up.
+All three are in this repository and all three work; they share the API, the
+Vim-side plugin manager, and the examples. **Channel is the default**: it works
+with a Vim and a Roc you already have. The in-process ones are for plugins that
+must answer Vim synchronously — a `completefunc`, an `'operatorfunc'`, an
+expression mapping — and source mode additionally removes the build step, so
+`:w` reloads a plugin with nothing in between.
 
-roc-vim decides which one a plugin wants by looking at its app header:
-`app [main!]` is a channel plugin, `app [Model, plugin]` is an in-process one.
+roc-vim decides from a plugin's app header: `app [main!]` is a channel plugin,
+`app [Model, plugin]` runs inside Vim. For an in-process plugin it loads the
+source directly when the engine library is configured, and otherwise builds it.
+The same file works either way.
 
 ## Getting started
 
@@ -77,11 +81,18 @@ vim            # :RocHello
 `~/.vim/pack/roc/start/`, creates `~/.vim/roc/` for your plugins, and puts the
 hello example there. Pass `--examples` to get all of them.
 
-For in-process plugins, also build the two patched pieces:
+For in-process plugins, also build the patched pieces:
 
 ```sh
 vim-patch/build-vim.sh --install        # a Vim with +roc
 # and a Roc with compiler-patch/ applied; see that directory's README
+
+# and, to run plugins from source with no build step at all:
+embed/build.sh <roc checkout>/zig-out/lib/libroc_embed.a
+```
+
+```vim
+let g:roc_embed_library = '/path/to/roc-vim/embed/libroc_vim_embed.so'
 ```
 
 ## How it works
@@ -124,6 +135,25 @@ Vim owns the loop, so a plugin is a model and a handler: `init!` returns the
 first model, `handle!` takes the model and an event and returns the next one.
 `Vim.eval!` is a call into Vim's evaluator that returns right away, and
 `Vim.reply!` answers `roc#ask()` the way a function does.
+
+### Plugins from source
+
+With the [engine library](embed/) configured, Vim skips the build entirely:
+
+```
+   ~/.vim/roc/hello.roc
+          |
+   Vim ---+--> libroc_vim_embed.so: the Roc compiler, in Vim's process
+          |         |
+          |         +-- compiles the plugin, runs it through the interpreter
+          +<--------+-- the plugin's effects come straight back into Vim
+```
+
+The plugin is the same file; only the way it is run differs. `:RocPlugins`
+shows `source` instead of `in-process`, and saving the file recompiles it in
+place. Set `g:roc_prefer_source = 0` to build instead — worth doing for a
+plugin that does heavy computation, since the interpreter is slower than
+compiled code.
 
 Everything crossing the boundary is still text: Vim's own syntax for commands
 and expressions, JSON for values. The plugin library's ABI is four function
@@ -270,13 +300,19 @@ vim/               the Vim side, installed as a package
   autoload/roc.vim finding, building, starting and talking to plugins
   doc/roc.txt      :help roc-vim
 vim-patch/         the +roc feature for Vim, as a patch plus a build script
-compiler-patch/    the one Roc fix in-process plugins need, and why
+compiler-patch/    the Roc patches: a shared-library fix, and the embedding library
+embed/             the engine: the compiler in a library, so Vim runs source directly
+  roc_embed.h      the C API of the embedding library
+  engine.c         load a .roc file, run its entrypoints, answer its effects
+  build.sh         links libroc_vim_embed.so
 examples/          channel plugins to copy from
 examples-inprocess/  in-process plugins to copy from
 test/
   protocol_test.py   pretends to be Vim, checks a channel plugin end to end
   vim_test.sh        starts a real Vim and checks what channel plugins did
   vim_inprocess_test.sh  the same for a plugin loaded into Vim
+  vim_source_test.sh     the same for a plugin Vim compiles itself
+  embed_test.c       drives the engine without Vim
   inprocess_stub.c   a C plugin for testing Vim's +roc side on its own
 ```
 
@@ -288,9 +324,14 @@ python3 test/protocol_test.py      # no Vim needed
 ./test/vim_test.sh                 # starts a real Vim
 
 VIM=/path/to/patched/vim ROC=/path/to/patched/roc ./test/vim_inprocess_test.sh
+VIM=/path/to/patched/vim ./test/vim_source_test.sh
+
+cc -o /tmp/embed_test test/embed_test.c -ldl   # the engine, without Vim
+/tmp/embed_test embed/libroc_vim_embed.so examples-inprocess/hello.roc
 ```
 
-The in-process test skips itself when the Vim it finds has no `+roc`.
+The in-process tests skip themselves when the Vim they find has no `+roc`, and
+the source test also skips without the engine library.
 `protocol_test.py` is also the readable description of the channel protocol, if
 you want to write a plugin in some other language.
 
@@ -298,8 +339,8 @@ you want to write a plugin in some other language.
 
 Roc is pre-1.0 and its platform ABI still moves. This was built and tested
 against Roc **nightly-2026-09-04** (channel) and roc-lang/roc at
-**1d982dca** with `compiler-patch/` applied (in-process), plus Vim 9.1 and
-9.2.1119.
+**1d982dca** with `compiler-patch/` applied (in-process and source), plus Vim
+9.1 and 9.2.1119.
 
 If a newer compiler rejects the platform, the generated ABI header is the thing
 to refresh — it is what maps the effects in `Host.roc` to C functions in
