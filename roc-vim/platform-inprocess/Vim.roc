@@ -77,6 +77,14 @@ Vim := [].{
     log! : Str => {}
     log! = |message| Host.message!("roc-vim: ${message}", False)
 
+    ## Set a Vim option, the way `:set` does.
+    ## ```
+    ## Vim.set!("shiftwidth=2")
+    ## Vim.set!("nobackup")
+    ## ```
+    set! : Str => {}
+    set! = |option| Host.ex!("set ${option}")
+
     ## Redraw the screen.
     redraw! : () => {}
     redraw! = || Host.ex!("redraw")
@@ -109,6 +117,15 @@ Vim := [].{
         args_json = Value.to_str(Value.Array(arguments))
         eval!("call(${quote(function_name)}, json_decode(${quote(args_json)}))")
     }
+
+    ## Run a shell command and return everything it wrote to stdout, the way
+    ## Vim's `system()` does. The trailing newline is kept, so trim it if the
+    ## output is meant to be one value.
+    ## ```
+    ## branch = Str.trim(Vim.system!("git rev-parse --abbrev-ref HEAD")?)
+    ## ```
+    system! : Str => Try(Str, [VimErr(Str), ..])
+    system! = |command| as_str(call!("system", [Value.Text(command)])?)
 
     ## Answer whoever raised this event. Vimscript that called
     ## `roc#ask()` (or `roc_event()`) gets this value back.

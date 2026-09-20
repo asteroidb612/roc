@@ -74,6 +74,14 @@ Vim := [].{
     error! = |message|
         Host.ex!("echohl ErrorMsg | echomsg ${quote(message)} | echohl None")
 
+    ## Set a Vim option, the way `:set` does.
+    ## ```
+    ## Vim.set!("shiftwidth=2")
+    ## Vim.set!("nobackup")
+    ## ```
+    set! : Str => {}
+    set! = |option| ex!("set ${option}")
+
     ## Redraw the screen. Worth doing after changing something while Vim is
     ## waiting for input.
     redraw! : () => {}
@@ -110,6 +118,15 @@ Vim := [].{
     call! : Str, List(Value) => Try(Value, [VimErr(Str), ..])
     call! = |function_name, arguments|
         decode_answer(Host.call!(function_name, Value.to_str(Value.Array(arguments))))
+
+    ## Run a shell command and return everything it wrote to stdout, the way
+    ## Vim's `system()` does. The trailing newline is kept, so trim it if the
+    ## output is meant to be one value.
+    ## ```
+    ## branch = Str.trim(Vim.system!("git rev-parse --abbrev-ref HEAD")?)
+    ## ```
+    system! : Str => Try(Str, [VimErr(Str), ..])
+    system! = |command| as_str(call!("system", [Value.Text(command)])?)
 
     ## Answer a request Vim is blocked on. The number comes from the `reply_to`
     ## of a [Notify] event; sending the answer unblocks `roc#request()`.

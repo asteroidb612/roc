@@ -279,6 +279,7 @@ running, and how. See `:help roc-vim` for the rest.
 | [examples/ticker.roc](examples/ticker.roc) | doing work between events, answering `roc#ask()` |
 | [examples-inprocess/hello.roc](examples-inprocess/hello.roc) | the same plugin, loaded into Vim |
 | [examples-inprocess/complete.roc](examples-inprocess/complete.roc) | a `completefunc`: Vim waits for the answer, so only an in-process plugin can give it |
+| [examples-inprocess/vimrc.roc](examples-inprocess/vimrc.roc) | a whole working vimrc as one plugin — options and mappings as data, the functions with types on them |
 
 ## Layout
 
@@ -307,11 +308,14 @@ embed/             the engine: the compiler in a library, so Vim runs source dir
   build.sh         links libroc_vim_embed.so
 examples/          channel plugins to copy from
 examples-inprocess/  in-process plugins to copy from
+  vimrc.roc        a real vimrc, rewritten as a plugin
+  vimrc.vim        the dozen lines of Vimscript it still needs
 test/
   protocol_test.py   pretends to be Vim, checks a channel plugin end to end
   vim_test.sh        starts a real Vim and checks what channel plugins did
   vim_inprocess_test.sh  the same for a plugin loaded into Vim
   vim_source_test.sh     the same for a plugin Vim compiles itself
+  vimrc_test.sh          checks the vimrc plugin's settings, mappings and commands
   embed_test.c       drives the engine without Vim
   inprocess_stub.c   a C plugin for testing Vim's +roc side on its own
 ```
@@ -325,6 +329,7 @@ python3 test/protocol_test.py      # no Vim needed
 
 VIM=/path/to/patched/vim ROC=/path/to/patched/roc ./test/vim_inprocess_test.sh
 VIM=/path/to/patched/vim ./test/vim_source_test.sh
+VIM=/path/to/patched/vim ./test/vimrc_test.sh
 
 cc -o /tmp/embed_test test/embed_test.c -ldl   # the engine, without Vim
 /tmp/embed_test embed/libroc_vim_embed.so examples-inprocess/hello.roc
