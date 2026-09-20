@@ -12,6 +12,10 @@ patches, build the compiler and the library:
 ./build-roc.sh
 ```
 
+On this machine that took **34 minutes** and produced a 224MB compiler
+(`release-safe-1d982dca`) and a 199MB library, from `git init` to both
+artifacts. Budget a few GB of disk for the Zig cache along the way.
+
 It leaves `build/roc/zig-out/bin/roc` and `build/roc/zig-out/lib/libroc_embed.a`,
 which is where `embed/build.sh`, `setup.sh` and the tests all look, so nothing
 downstream needs to be told where they are. `--compiler-only` skips the
@@ -90,6 +94,28 @@ roc_embed_call(program, ordinal, args, &result, &error);
 ```
 
 `roc-vim/embed/` is one consumer; nothing in the library knows about Vim.
+
+## If the fetch fails
+
+`zig build` downloads Roc's dependencies itself, over HTTPS and, for one of
+them, over git. Behind a proxy that rewrites or inspects TLS, Zig's own client
+can fail where `git` and `curl` succeed — the symptoms are
+`HTTP response read failure: ConnectionResetByPeer` or `unable to discover
+remote git server capabilities`.
+
+The way out is to put the package where Zig would have put it, so it never
+fetches. Clone it with real git at the commit the manifest names, drop the
+`.git` directory, and copy the tree into the build's package directory under
+the hash the manifest expects:
+
+```sh
+git clone https://github.com/facebook/zstd.git /tmp/zstd
+git -C /tmp/zstd checkout <the commit in the .zon>
+rm -rf /tmp/zstd/.git
+cp -r /tmp/zstd build/roc/zig-pkg/<the hash in the .zon>
+```
+
+Nothing in roc-vim needs this on a machine with ordinary network access.
 
 ## Notes
 

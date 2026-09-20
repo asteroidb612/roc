@@ -21,16 +21,8 @@ playground does in a browser tab, pointed at an editor instead.
 Two pieces: the compiler as a library, then this engine around it.
 
 ```sh
-# 1. a Roc compiler with the embedding library (needs Zig 0.16)
-git clone https://github.com/roc-lang/roc.git
-cd roc
-git apply <roc-vim>/compiler-patch/roc-embed-library.patch
-git apply <roc-vim>/compiler-patch/roc-shared-library-static-data.patch   # optional
-zig build roc-embed -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe
-
-# 2. the engine
-cd <roc-vim>/embed
-./build.sh <roc checkout>/zig-out/lib/libroc_embed.a
+./compiler-patch/build-roc.sh   # the compiler and libroc_embed.a
+./embed/build.sh                # this engine, around it
 ```
 
 Then tell Vim where it is:
@@ -44,6 +36,13 @@ plugin recompiles it in place.
 
 The library is large (~140 MB: it is a compiler) and is loaded lazily — a Vim
 that never starts a source plugin never maps it.
+
+`build.sh` needs no argument: it looks where `compiler-patch/build-roc.sh`
+leaves `libroc_embed.a`. An ordinary `cc` is enough, because that library
+carries Zig's compiler-rt with it. The script links with `--no-undefined` and
+then dlopens the result before reporting success — a shared library links
+happily with symbols nobody defines, and the failure would otherwise turn up
+as an error inside Vim long afterwards.
 
 ## How it fits together
 
