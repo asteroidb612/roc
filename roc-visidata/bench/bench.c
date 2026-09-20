@@ -39,6 +39,10 @@ static double now_ms(void) {
 
 static long log_calls;
 
+/* Written but never read: keeps the optimizer from deleting timed work. */
+static volatile double sink;
+static volatile double keep;
+
 static void roc_str_decref(RocStr s) {
     uint8_t *bytes = s.bytes;
     intptr_t *refcount;
@@ -145,7 +149,8 @@ int main(int argc, char **argv) {
     double *samples, *input;
     void *program = NULL;
     char *error = NULL;
-    int map_ord, handle_ord;
+    int map_ord, handle_ord, init_ord;
+    void *model = NULL;
 
     if (argc < 2) {
         fprintf(stderr, "usage: %s <app.roc> [n] [iters] [opens]\n", argv[0]);
@@ -175,8 +180,16 @@ int main(int argc, char **argv) {
 
     map_ord = roc_embed_entrypoint(program, "roc_bench_map", strlen("roc_bench_map"));
     handle_ord = roc_embed_entrypoint(program, "roc_bench_handle", strlen("roc_bench_handle"));
-    if (map_ord < 0 || handle_ord < 0) {
-        fprintf(stderr, "entrypoints missing (map=%d handle=%d)\n", map_ord, handle_ord);
+    init_ord = roc_embed_entrypoint(program, "roc_bench_init", strlen("roc_bench_init"));
+    if (map_ord < 0 || handle_ord < 0 || init_ord < 0) {
+        fprintf(stderr, "entrypoints missing (init=%d map=%d handle=%d)\n",
+                init_ord, map_ord, handle_ord);
+        return 1;
+    }
+
+    /* The model the host holds between events, as the real engine does. */
+    if (roc_embed_call(program, init_ord, NULL, &model, &error) != 0) {
+        fprintf(stderr, "init failed: %s\n", error ? error : "(no message)");
         return 1;
     }
 
@@ -184,18 +197,20 @@ int main(int argc, char **argv) {
     samples = malloc(sizeof(double) * (size_t)iters);
     for (i = 0; i < iters; i++) {
         unsigned char *args = calloc(1, roc_embed_args_size(program, handle_ord));
-        RocStr event = roc_str_from("{\"event\":\"command:bench\"}", 25);
-        RocStr out;
+        const char *json = "{\"event\":\"command:bench\"}";
+        RocStr event = roc_str_from(json, strlen(json));
+        void *next = NULL;
         double t0;
 
-        memcpy(args + roc_embed_arg_offset(program, handle_ord, 0), &event, sizeof event);
+        memcpy(args + roc_embed_arg_offset(program, handle_ord, 0), &model, sizeof model);
+        memcpy(args + roc_embed_arg_offset(program, handle_ord, 1), &event, sizeof event);
         t0 = now_ms();
-        if (roc_embed_call(program, handle_ord, args, &out, &error) != 0) {
+        if (roc_embed_call(program, handle_ord, args, &next, &error) != 0) {
             fprintf(stderr, "handle failed: %s\n", error ? error : "(no message)");
             return 1;
         }
         samples[i] = now_ms() - t0;
-        roc_str_decref(out);
+        model = next;
         free(args);
     }
     report("handle (one event)", samples, iters, 0);
@@ -214,7 +229,7 @@ int main(int argc, char **argv) {
         double t0 = now_ms();
         for (size_t k = 0; k < n; k++) out[k] = input[k] * 2.5 + 1.0;
         samples[i] = now_ms() - t0;
-        if (out[n - 1] == 12345.6789) printf("");
+        sink += out[n - 1];
         free(out);
     }
     report("C loop (ceiling)", samples, iters, (double)n);
@@ -244,12 +259,12 @@ int main(int argc, char **argv) {
         samples[i] = now_ms() - t0;
         /* read the result back, as a host filling a column would */
         {
-            double sink = 0;
+            double local = 0;
             double *elements = (double *)out.elements;
-            for (size_t k = 0; k < out.length; k++) sink += elements[k];
-            if (sink == 12345.6789) printf("");  /* keep it */
+            for (size_t k = 0; k < out.length; k++) local += elements[k];
+            keep = local;
         }
-        roc_list_free(out);
+        if (out.elements != in.elements) roc_list_free(out);
         free(args);
     }
     report("map (interpreted)", samples, iters, (double)n);
@@ -258,8 +273,12 @@ int main(int argc, char **argv) {
 
     /* 4. The same bulk path over a column of text. */
     {
-        int strs_ord = roc_embed_entrypoint(program, "roc_bench_map_strs",
-                                            strlen("roc_bench_map_strs"));
+        /* Off by default: releasing what Roc hands back for a List(Str) needs
+         * ownership rules this harness does not implement, and the float path
+         * answers the question. BENCH_STRS=1 to time it anyway. */
+        int strs_ord = getenv("BENCH_STRS") == NULL ? -1 :
+            roc_embed_entrypoint(program, "roc_bench_map_strs",
+                                 strlen("roc_bench_map_strs"));
         if (strs_ord >= 0) {
             size_t sn = n > 1000000 ? 1000000 : n;  /* strings are 24B each */
             char **texts = malloc(sizeof(char *) * sn);
@@ -291,11 +310,11 @@ int main(int argc, char **argv) {
                     return 1;
                 }
                 samples[i] = now_ms() - t0;
-                {
-                    RocStr *slots = (RocStr *)out.elements;
-                    for (size_t k = 0; k < out.length; k++) roc_str_decref(slots[k]);
-                }
-                roc_list_free(out);
+                /* Deliberately not freed: what Roc hands back for a list of
+                 * strings does not always have the shape this harness knows
+                 * how to release, and a benchmark can afford to leak. Timing
+                 * is unaffected. */
+                keep = (double)out.length;
                 free(args);
             }
             report("map strs (interpreted)", samples, iters, (double)sn);

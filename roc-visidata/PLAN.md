@@ -17,7 +17,7 @@ described below is that code with the editor swapped out.
 - [The host surface](#the-host-surface)
 - [What a plugin looks like](#what-a-plugin-looks-like)
 - [Configuring VisiData in Roc](#configuring-visidata-in-roc)
-- [Speed](#speed)
+- [Speed](#speed) — measured; see [`bench/RESULTS.md`](bench/RESULTS.md)
 - [Threads, the GIL, and crashes](#threads-the-gil-and-crashes)
 - [Packaging, and what "no build step" means](#packaging-and-what-no-build-step-means)
 - [Milestones](#milestones)
@@ -30,9 +30,11 @@ Three things, in the order they pay off:
 
 1. **Plugins in Roc.** A `.roc` file in `~/.visidata/roc/` becomes a VisiData
    plugin: it adds commands, binds keys, adds columns, reacts to what you do.
-2. **Computation in Roc.** Derived columns, filters, aggregators and loaders
-   run as Roc over whole columns rather than as Python per cell — which is
-   where a table of ten million rows spends its afternoon.
+2. **Computation in Roc.** Loaders, and operations over the columns they
+   produce, run as Roc over data Roc owns — which is where a table of ten
+   million rows spends its afternoon. This needs the compiled tier; the
+   interpreter is 22× slower than the Python it would replace, and
+   `bench/RESULTS.md` says so in detail.
 3. **Configuration in Roc.** `~/.visidatarc` is executed Python today
    (`visidata/settings.py:441`, `loadConfigFile`). A `.visidatarc.roc` beside
    it gets a type-checked config with no `exec()` of a file that can do
@@ -388,78 +390,98 @@ during a migration.
 
 ## Speed
 
-The honest version, because this is the part where a plan can quietly promise
-something it cannot deliver.
+Measured, not guessed: `bench/RESULTS.md` has the numbers and how they were
+taken. The short version rearranges this section from what it was.
 
-**The interpreter is not fast.** roc-vim's own docs say it: "for one doing real
-computation per keystroke, build it instead". Roc running as LIR in an
-interpreter is not going to beat CPython by a wide margin on a tight numeric
-loop, and it will lose badly to NumPy. If roc-visidata shipped only the
-interpreted tier, "plugins in Roc are fast" would be false.
+### What the interpreter costs
 
-So the plan is two tiers with an automatic upgrade, plus a data path that keeps
-per-row costs off the FFI boundary entirely.
+One `map!` over a column of F64, `x * 2.5 + 1.0` per element:
 
-### Tier 1 — interpreted, instant
+| | ns/element |
+| --- | --- |
+| C loop (what compiled Roc approaches) | 0.2–0.6 |
+| numpy | 0.6–1.8 |
+| Python list comprehension | 25–37 |
+| Python compiled expression, per row | 139–148 |
+| **Roc, interpreted** | **3234–3811** |
 
-What is described above. Load time is the compiler running in-process (well
-under a second for a small plugin, per roc-vim), and every event after that is
-interpreted. This is the right tier for plugins that mostly call into VisiData:
-commands, key bindings, sheet pushes, config.
+Interpreted Roc is **~22× slower than the Python it would replace** and ~90×
+slower than a list comprehension, flat from 10k to 1M elements. The honest
+conclusion is the one the plan was worried about: **tier 1 does not make
+computation fast, it makes it much slower.** Any claim that plugins in Roc are
+fast rests entirely on the compiled tier, which makes tier 2 a requirement for
+a computing plugin rather than a background upgrade.
 
-### Tier 2 — compiled, native
+What tier 1 *is* fast enough for is everything else, and that is most of what a
+plugin does:
 
-The same `.roc` file, built to a shared library against `libhost.a` (`output:
-Shared` in the platform's `targets:`, which is what
-`roc-shared-library-static-data.patch` makes work). Python `dlopen`s it and
-calls `roc_vd_plugin_event` directly — real machine code, no interpreter.
+| | per event |
+| --- | --- |
+| a trivial handler | 0.003 ms |
+| a handler that parses its event JSON | 0.35 ms |
 
-**The upgrade is automatic and invisible.** On load, roc-visidata starts the
-plugin interpreted, and if a `roc` compiler is on `PATH` it kicks off a build
-in a background thread (VisiData already has `@asyncthread` for exactly this
-kind of work). When the build lands, the next event goes to the compiled
-library instead; the model is re-initialized and the plugin reports
-`transport=compiled` in `:RocPlugins`. Artifacts are cached under
-`~/.cache/roc-visidata/` keyed by source hash, so the second run of a plugin is
-native from the first keystroke. If no compiler is installed, nothing happens
-and the plugin stays interpreted — the feature degrades rather than failing.
+Sub-millisecond per dispatch. **Commands, key bindings, event handlers and
+`.visidatarc.roc` are comfortably fast interpreted**, and none of them wait on
+tier 2. That half of the design stands on its own.
 
-This is what makes "no build step" true without it also meaning "slow". The
-user never runs a build; a build sometimes runs for them.
+### What marshalling costs, which turns out to matter more
 
-### The bulk path, which matters more than the tier
+Even with an infinitely fast callee, a column has to leave Python's row objects
+and the results have to come back:
 
-Neither tier helps if every row costs an FFI crossing and a GIL acquisition.
-VisiData's `Column.getter` is called per cell (`visidata/column.py:312`), and
-`ExprColumn` compiles a Python expression per column and evaluates it per row
-(`visidata/expr.py`). Copying that shape into Roc would give us the worst of
-both.
+| Step | ns/element |
+| --- | --- |
+| extract the column from row objects | 48.5 |
+| `list` → `array('d')` | 15.5 |
+| C buffer → Python list | 21.2 |
+| **floor** | **85.2** |
+| (+ write results back into rows) | 155.6 |
 
-So the third entrypoint, `roc_vd_map`, takes a whole column and returns a whole
-column:
+Against a 149 ns/element bar, a *perfect* native callee behind that floor is
+worth **about 1.7×** — and nothing at all if results are written back into row
+objects. Marshalling, not computation, is the binding constraint on a bulk
+path that reads VisiData's rows.
 
-```roc
-map! : List(Value) -> List(Value)
-```
+There is a second reason not to build the speed story there. VisiData's display
+is already lazy: `getCell` runs per *visible* cell (`visidata/sheets.py:945`),
+so a derived column that is merely being looked at costs about fifty
+evaluations per screen, not N. Eagerly mapping a million rows to fill one would
+be a pessimization. **The bulk path is for whole-column work** — sort,
+aggregate, select-by-expression, save — not for display.
 
-`RocColumn` calls it **once** per recalculation, caches the result list, and
-serves `getter` out of the cache. One boundary crossing, one GIL round trip,
-N rows of Roc. The same entrypoint backs:
+### So where the speed actually is
 
-- **Derived columns** — `=` with a Roc expression instead of a Python one.
-- **Filters and selection** — `List(Value) -> List(Bool)`.
-- **Aggregators** — `vd.aggregator(name, func)` where `func` is a Roc fold
-  (`visidata/aggregators.py:130`).
-- **Loaders** — a Roc parser for a format VisiData has no loader for, which is
-  the case where beating Python is easy rather than hard.
+**Roc owning the data.** A Roc loader parses a file into native columns; Roc
+operations run over those columns without ever touching a Python object; only
+the cells actually on screen cross into Python. That is the architecture where
+the C-loop row of the first table is reachable, because the 85 ns floor is
+never paid per element — it is paid per visible cell, fifty at a time.
 
-Concretely: a 10M-row `float` column through a Roc `map!` in tier 2 should be
-one crossing and a native loop, against 10M interpreted Python frames today.
-That is the speed claim this design can actually stand behind, and it holds
-even in tier 1, where the win comes from deleting 10M Python frames rather than
-from the interpreter being quick.
+This reorders the plan. In descending order of how much they are worth:
 
-Benchmarks belong in milestone M5, not in this paragraph.
+1. **Roc loaders** (`bench/RESULTS.md` §3). A format VisiData has no loader
+   for, parsed by Roc into columns Roc keeps. Nothing crosses per row. This is
+   also the case where beating Python is easy rather than hard.
+2. **Whole-column operations over Roc-owned columns** — sort, filter,
+   aggregate, frequency — for the same reason.
+3. **Commands, bindings, config, event handlers.** Fast enough interpreted,
+   today, with no tier 2 and no bulk path.
+4. **Derived columns over Python rows.** Capped at ~1.7× even compiled;
+   worth having for the type checking and the language, not for the speed.
+
+### The two tiers, revised
+
+**Tier 1 — interpreted, instant.** No build step; 15.7 ms to compile a plugin
+that imports nothing, 154 ms for a realistic one. This is the tier for
+categories 3 above, and it is the one that makes the no-build-step promise
+true.
+
+**Tier 2 — compiled, native.** The same `.roc` file built against `libhost.a`
+as a shared library, `dlopen`ed and called directly. Required, not optional,
+for categories 1 and 2. The automatic background build and hot swap described
+earlier still applies, and the artifact cache still means the second run starts
+native — but a plugin that does real computation with no compiler installed
+should say so rather than quietly run 22× slower than Python.
 
 ## Threads, the GIL, and crashes
 
@@ -506,8 +528,9 @@ pip install roc-visidata
 ```
 
 The wheel carries `libroc_vd_embed.so` prebuilt — the Roc compiler, the engine,
-and the host, in one file. It is large (the whole compiler; expect tens of MB)
-and that is the price of the compiler being in-process. Per platform:
+and the host, in one file. Measured: **57 MB** stripped, from a 199 MB
+`libroc_embed.a`, built in 12 minutes at ~8 GB peak RAM. That is the price of
+the compiler being in-process. Per platform:
 
 | Platform | Tier 1 (interpreted) | Tier 2 (compiled) |
 | --- | --- | --- |
@@ -553,58 +576,86 @@ on the status line, mirroring `roc-vim/test/vim_test.sh`.
 config that a person would actually use.
 *Proves: configuration in Roc.*
 
-**M4 — the bulk path.**
-`roc_vd_map`, `RocColumn`, Roc expression columns bound to `=`, Roc
-aggregators, Roc row filters. Cached per recalculation.
-*Proves: one crossing per column, not per cell.*
+**M4 — Roc owning the data.**
+A Roc loader for a format VisiData has none for: Roc parses the file into
+columns it keeps, and only the cells on screen cross into Python. Then
+whole-column operations over those columns — sort, filter, aggregate. This is
+where the speed case lives (`bench/RESULTS.md` §3), so it is also where the
+first end-to-end benchmark against VisiData's own loader belongs.
+*Proves: the speed claim, on the architecture that can actually support it.*
 
-**M5 — tier 2 and benchmarks.**
+**M5 — tier 2, and the bulk path over Python rows.**
 `platform/targets/` and `libhost.a` for `output: Shared`; background compile
-with `@asyncthread`; hot swap; artifact cache keyed by source hash; graceful
-absence of a compiler. Then benchmarks, published in the README: Roc
-interpreted vs. Roc compiled vs. Python `ExprColumn` vs. NumPy where it
-applies, over 10^4 / 10^6 / 10^7 rows.
-*Proves: the speed claim, with numbers.*
+with `@asyncthread`; hot swap; artifact cache keyed by source hash; a plugin
+that needs tier 2 saying so when no compiler is installed. Then `roc_vd_map`
+and `RocColumn` for columns whose data is VisiData's — worth having for the
+language and the type checking, at a measured ceiling of about 1.7×, and
+documented as such.
+*Proves: computation in Roc is fast when it is compiled, and honestly bounded
+when the data belongs to Python.*
 
 **M6 — packaging.**
 Wheels for Linux x86-64 and arm64 with the engine inside; `roc-visidata
 build-engine` for everyone else; README, install docs, and a straight account
 of the limits above.
 
-M0–M2 is the interesting half and is mostly roc-vim with the Vim patch deleted.
+M0–M3 is the half that works interpreted, needs no tier 2, and is mostly
+roc-vim with the Vim patch deleted. M4 is where the speed case has to be
+earned.
 
 ## Risks and open questions
 
-- **Engine size.** The wheel carries a compiler. If tens of MB is unacceptable,
-  the fallback is a separate `roc-visidata-engine` package, or downloading the
-  engine on first use into `~/.cache/roc-visidata/`. Decide at M6, measure at M0.
-- **Compile latency at startup.** Every plugin compiles when VisiData starts.
-  Ten plugins at 0.5s each is a five-second startup, which is not acceptable for
-  a tool people open on a file to look at it. Mitigations, in order: compile
-  lazily on first dispatch rather than at startup; cache the tier-2 artifact so
-  a warm plugin never touches the compiler; compile off the UI thread. Needs a
-  real measurement at M2 before choosing.
-- **The interpreter may be slower than hoped even on the bulk path.** M5's
-  benchmarks are the gate. If tier 1 loses to plain Python on `map!`, the
-  answer is to make tier 2 the default whenever a compiler is present and say
-  so plainly, not to bury the number.
+The first three were the open ones. They have been measured; `bench/RESULTS.md`
+has the detail.
+
+- ~~**Compile latency at startup.**~~ **Answered: compile lazily.** 15.7 ms for
+  a plugin that imports nothing, 154 ms cold and ~110 ms warm for a realistic
+  one. The compiler's on-disk cache is enabled and populated but only takes
+  about 30% off. Ten realistic plugins compiled eagerly would add 1.1–1.5 s to
+  starting `vd`, so compiling on first dispatch is a requirement rather than a
+  mitigation, and the tier-2 artifact cache is what keeps the second run off
+  the compiler entirely.
+- ~~**The interpreter may be slower than hoped.**~~ **Answered: it is, by a
+  lot.** 3.2–3.8 µs per element, ~22× slower than the Python expression column
+  it would replace. Tier 1 is for commands, bindings, event handlers and
+  config, where it is comfortably sub-millisecond; tier 2 is required for
+  anything computational. The plan says so now rather than burying it.
+- ~~**Engine size.**~~ **Answered: 57 MB** stripped (138 MB unstripped, from a
+  199 MB `libroc_embed.a`), built in 12 minutes on 4 cores at ~8 GB peak RAM.
+  Large but shippable in a wheel. If that is too much, the fallbacks are a
+  separate `roc-visidata-engine` package or a download into
+  `~/.cache/roc-visidata/` on first use.
+- **A compiler panic takes VisiData with it.** Found while benchmarking: a
+  plugin that imports a platform module the platform's own `main.roc` does not
+  import panics on `unreachable` in `src/compile/coordinator.zig:593`, inside
+  `roc_embed_open`. A Roc `crash` is caught and reported; a panic in the
+  compiler cannot be, because it aborts the process. This is the cost of
+  embedding stated concretely, and it argues for reporting it upstream and for
+  compiling in a subprocess if embedding ever needs to be bulletproof — which
+  would cost the in-process property the whole design is built on. For now:
+  document it, and fix the upstream bug.
 - **Patches against a moving compiler.** Both compiler patches are against
-  `roc-lang/roc` commit `1d982dca` (2026-09-18). They will drift. The embed
-  patch adds files and changes nothing existing, so it should rebase cleanly;
-  the static-data patch touches four files and will need attention. Worth
-  proposing `roc-embed` upstream — a second independent consumer is the best
-  argument for it.
+  `roc-lang/roc` commit `1d982dca` (2026-09-18) and both still apply cleanly
+  there. They will drift. The embed patch adds files and changes nothing
+  existing, so it should rebase easily; the static-data patch touches four
+  files and will need attention. A second independent consumer is the best
+  argument for proposing `roc-embed` upstream.
 - **VisiData API stability.** Inspected against **visidata 3.4**. `addCommand`,
   `Column.getter`, `vd.aggregator`, `vd.option` and `loadConfigFile` are all
-  long-standing, but the execstr trampoline is the part most likely to move.
-  Pin a minimum version and test against it in CI.
+  long-standing; the execstr trampoline is the part most likely to move. Pin a
+  minimum version and test against it in CI.
 - **`Value` is JSON-shaped, and VisiData's cells are not always JSON.** Dates,
-  `datetime`, and custom types need a decided encoding at the boundary. Start
-  with ISO-8601 strings plus a type tag; revisit if it becomes lossy in a way
-  people hit.
-- **Who owns returned memory.** `eval_json` returns a buffer Python allocated
-  and C frees, matching `roc_vim_api_T.free_result`. Getting this wrong is a
-  leak per keystroke. `test/engine_test.py` should run under a leak check.
+  `datetime` and custom types need a decided encoding. Start with ISO-8601
+  strings plus a type tag; revisit if it turns out lossy in a way people hit.
+- **Who owns returned memory.** Still open, and now known to be fiddly: the
+  benchmark could not release a `List(Str)` that Roc returned without
+  `free(): invalid pointer`, so its string case is gated off. Getting this
+  right is engine work, with `roc-vim/platform-inprocess/host.c` as the
+  reference. A leak per keystroke is the failure mode.
+- **Is a Roc loader actually faster end to end?** The speed case now rests on
+  Roc owning the data, and that has not been measured — only the pieces around
+  it have. M4 should benchmark a Roc loader against VisiData's own on the same
+  file before the README claims anything.
 
 ## File layout
 
@@ -641,7 +692,12 @@ roc-visidata/
   test/
     engine_test.py           the engine with a stub api, no VisiData
     visidata_test.py         a real vd under a pty
-    bench/                   (M5)
+  bench/                     the numbers behind the Speed section
+    RESULTS.md               what was measured, and what it means
+    bench.c                  Roc through libroc_embed
+    python_baseline.py       the same column in Python and numpy
+    marshal_baseline.py      the Python-side floor
+    platform/ platform-full/ apps/
 ```
 
 `compiler-patch/` is deliberately absent: roc-visidata uses

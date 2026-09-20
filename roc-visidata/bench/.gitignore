@@ -1,0 +1,3 @@
+# The built benchmark carries the whole compiler (~138 MB).
+bench
+libroc_embed.a
