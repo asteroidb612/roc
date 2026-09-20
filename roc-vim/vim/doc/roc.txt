@@ -8,6 +8,7 @@ Plugins written in Roc, built when they change and started when Vim starts.
 2. Commands ............................. |roc-vim-commands|
 3. Options .............................. |roc-vim-options|
 4. Writing a plugin ..................... |roc-vim-writing|
+   Plugins made of several files ........ |roc-vim-modules|
 5. Talking to plugins from Vimscript .... |roc-vim-vimscript|
 6. What plugins can ask Vim for ......... |roc-vim-api|
 7. Plugins inside Vim ................... |roc-vim-inprocess|
@@ -124,6 +125,38 @@ Then `:RocStart greet`, or just restart Vim.
 
 Register commands and mappings last. A plugin sets itself up in order, so
 `:Greet` existing tells you everything registered before it is in place too.
+
+A plugin has to use `?` somewhere.                        *roc-vim-question*
+The platform asks for `Try(model, [VimErr(Str), ..])`, and until something in
+the plugin propagates an error with `?`, that error type stays unbound and the
+compiler says "platform requirement failed checking" - pointing at the
+platform rather than at your code. One `?` anywhere settles it: >
+
+    name = Vim.buffer_name!()?
+<
+MORE THAN ONE FILE                                         *roc-vim-modules*
+
+A plugin can be a directory instead of a file: `main.roc` beside the modules
+it imports. Vim treats the directory as one plugin, named after it, and saving
+any file in it rebuilds and restarts the whole thing. >
+
+    ~/.vim/roc/vimrc/
+      main.roc        the app
+      Notebook.roc    a module it imports
+<
+Only `main.roc` is an `app`; the rest are modules, which is how Vim knows
+which file to build.
+
+A module can `import vim.Vim` and do effects of its own, just as the app does.
+But a module that does cannot be tested on its own - `roc test` has no
+platform to resolve `vim` against - so logic worth testing belongs in a module
+that imports nothing: >
+
+    roc test ~/.vim/roc/vimrc/Notebook.roc
+<
+Write modules as `Name := [].{ ... }` with no `module [...]` header, the way
+this platform's own `Vim.roc` does. The header still compiles but is
+deprecated, and `roc test` exits non-zero on the warning.
 
 ==============================================================================
 5. Talking to plugins from Vimscript                   *roc-vim-vimscript*
