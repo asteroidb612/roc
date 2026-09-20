@@ -20,10 +20,11 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "$here")
-vim_bin=${VIM:-vim}
+. "$repo/versions.sh"
+vim_bin=$(roc_vim_find_vim "$repo")
 engine=${ROC_VIM_ENGINE:-$repo/embed/libroc_vim_embed.so}
 
-command -v "$vim_bin" >/dev/null || { echo "SKIP: no vim (set VIM=...)"; exit 0; }
+[ -n "$vim_bin" ] || { echo "SKIP: no vim (set VIM_BIN=...)"; exit 0; }
 if ! "$vim_bin" --version | tr ' ' '\n' | grep -qx '+roc'; then
     echo "SKIP: this vim has no +roc; build one with vim-patch/build-vim.sh"
     exit 0

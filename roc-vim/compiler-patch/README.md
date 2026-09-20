@@ -5,22 +5,39 @@ real program as a shared library, which in-process plugins are.
 `roc-embed-library.patch` adds an embedding library, which is what lets Vim
 compile and run a plugin from its source without building anything.
 
-Both are against roc-lang/roc commit
-`1d982dca644aaddf1cc858f8580fadccf025358b` (2026-09-18) and need Zig 0.16.
+`build-roc.sh` does the whole thing — clone at the pinned commit, apply both
+patches, build the compiler and the library:
 
 ```sh
-git clone https://github.com/roc-lang/roc.git
-cd roc
+./build-roc.sh
+```
+
+It leaves `build/roc/zig-out/bin/roc` and `build/roc/zig-out/lib/libroc_embed.a`,
+which is where `embed/build.sh`, `setup.sh` and the tests all look, so nothing
+downstream needs to be told where they are. `--compiler-only` skips the
+library, which is much quicker if you do not want source loading; `--debug`
+builds unoptimized, which is faster to build and produces a ~3GB binary.
+
+The commit and the Zig version are pinned in [`../versions.sh`](../versions.sh)
+— `1d982dca` (2026-09-18) and Zig 0.16.0 — and that is the only place to change
+them.
+
+**This is the only Roc compiler roc-vim uses.** A released nightly can build
+channel plugins, but not in-process ones (they need the shared-library fix) and
+not source loading (that needs the embedding library). Keeping one patched
+compiler for all three is simpler than remembering which compiler built what,
+at the cost of trailing the nightlies a little.
+
+By hand, if you would rather:
+
+```sh
+git clone https://github.com/roc-lang/roc.git && cd roc
 git checkout 1d982dca644aaddf1cc858f8580fadccf025358b
 git apply /path/to/roc-shared-library-static-data.patch
 git apply /path/to/roc-embed-library.patch
-
-zig build roc                                                     # the compiler
-zig build roc-embed -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe   # the library
+zig build roc -Doptimize=ReleaseSafe
+zig build roc-embed -Doptimize=ReleaseSafe
 ```
-
-Point Vim at the compiler with `let g:roc_command = '/path/to/roc'`, and build
-the engine around the library with `roc-vim/embed/build.sh`.
 
 ## roc-shared-library-static-data.patch
 

@@ -10,6 +10,7 @@
 set -eu
 
 repo=$(cd "$(dirname "$0")" && pwd)
+. "$repo/versions.sh"
 vim_dir="${HOME}/.vim"
 copy_all_examples=0
 
@@ -40,10 +41,20 @@ if ! vim --version | grep -q '+channel'; then
     exit 1
 fi
 
-if ! command -v roc >/dev/null 2>&1; then
-    say "warning: the roc compiler is not on your PATH."
-    say "Plugins are built with it, so install Roc from https://roc-lang.org/install"
-    say "or set g:roc_command in your vimrc to point at it."
+# One compiler builds everything here, and compiler-patch/build-roc.sh is what
+# builds it. A released Roc on PATH will do for channel plugins, but not for
+# the in-process ones, so say which we found.
+roc_command=$(roc_vim_find_roc "$repo")
+if [ -z "$roc_command" ]; then
+    say "warning: no roc compiler found."
+    say "Build the one roc-vim uses:  $repo/compiler-patch/build-roc.sh"
+    say "Or set g:roc_command in your vimrc to point at one you already have."
+elif [ "$roc_command" = "$repo/$ROC_VIM_ROC_BUILD/zig-out/bin/roc" ]; then
+    say "using the compiler this repository built: $roc_command"
+else
+    say "using the roc on your PATH: $roc_command"
+    say "note: that builds channel plugins, but in-process plugins need the one"
+    say "from $repo/compiler-patch/build-roc.sh (see compiler-patch/README.md)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -128,6 +139,20 @@ done
 if vim --version | tr ' ' '\n' | grep -qx '+roc'; then
     say "this vim has +roc, so plugins can also run inside it"
     say "see $repo/examples-inprocess and $repo/README.md"
+fi
+
+if [ "$roc_command" = "$repo/$ROC_VIM_ROC_BUILD/zig-out/bin/roc" ]; then
+    cat <<EOF
+
+Add this to your vimrc so Vim builds plugins with the same compiler:
+
+    let g:roc_command = '$roc_command'
+EOF
+    if [ -f "$repo/embed/libroc_vim_embed.so" ]; then
+        cat <<EOF
+    let g:roc_embed_library = '$repo/embed/libroc_vim_embed.so'
+EOF
+    fi
 fi
 
 cat <<EOF

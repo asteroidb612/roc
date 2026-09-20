@@ -81,19 +81,26 @@ vim            # :RocHello
 `~/.vim/pack/roc/start/`, creates `~/.vim/roc/` for your plugins, and puts the
 hello example there. Pass `--examples` to get all of them.
 
-For in-process plugins, also build the patched pieces:
+### Everything, from a fresh clone
+
+The steps above want a Roc on your PATH, which is enough for channel plugins.
+In-process plugins need the patched compiler, and running plugins from source
+needs the embedding library built from it. Three scripts, in this order, and
+nothing is installed outside the clone:
 
 ```sh
-vim-patch/build-vim.sh --install        # a Vim with +roc
-# and a Roc with compiler-patch/ applied; see that directory's README
-
-# and, to run plugins from source with no build step at all:
-embed/build.sh <roc checkout>/zig-out/lib/libroc_embed.a
+./compiler-patch/build-roc.sh    # roc + libroc_embed.a  (clones Roc; slow)
+./embed/build.sh                 # the engine Vim loads plugins with
+./vim-patch/build-vim.sh         # a Vim with +roc       (clones Vim; slow)
+./setup.sh                       # hosts, the Vim package, a plugin directory
 ```
 
-```vim
-let g:roc_embed_library = '/path/to/roc-vim/embed/libroc_vim_embed.so'
-```
+Each one finds what the one before it built, so none of them needs an
+argument. `setup.sh` prints the two lines to paste into your vimrc at the end.
+
+The versions all of this is pinned to live in one file, [`versions.sh`](versions.sh):
+the Roc commit, the Zig it builds with, and the Vim tag the patch is made
+against. That is the only place to change when moving to a newer compiler.
 
 ## How it works
 
@@ -216,6 +223,44 @@ In both shapes, register commands and mappings **last**. A plugin sets itself
 up in order, so `:Ready` existing tells you the subscriptions above it are in
 place too.
 
+> **A plugin has to use `?` somewhere.** The platform asks for
+> `Try(model, [VimErr(Str), ..])`, and until something in the plugin propagates
+> an error with `?`, the error type stays an unbound variable and the compiler
+> says `platform requirement failed checking` — pointing at the platform rather
+> than at your code. One `?` anywhere (`name = Vim.buffer_name!()?`) settles it.
+
+### More than one file
+
+A plugin can be a directory instead of a file: `main.roc` beside the modules it
+imports. Vim treats the directory as one plugin, named after it, and saving any
+file in it rebuilds and restarts the whole thing.
+
+```
+~/.vim/roc/vimrc/
+  main.roc        app [Model, plugin] { vim: platform "..." }
+  Settings.roc    module [options, mappings, ...]
+  Notebook.roc    module [run_block!]
+```
+
+A module can `import vim.Vim` and do effects of its own, exactly as the app
+does — it is not limited to pure helpers:
+
+```roc
+module [announce!]
+
+import vim.Vim
+
+announce! : Str => Try({}, [VimErr(Str), ..])
+announce! = |text| {
+    file = Vim.buffer_name!()?
+    Vim.echom!("${text}, in ${file}")
+    Ok({})
+}
+```
+
+Only `main.roc` is an `app`; the rest are `module`s, which is how Vim tells
+which file to build. This works in all three modes, source loading included.
+
 `data` is a [`Value`](platform/Value.roc) — the JSON-shaped type everything
 crossing into Roc uses. For an autocommand event it holds the buffer number,
 file name, filetype, cursor position and mode; for a command it also holds
@@ -284,6 +329,7 @@ running, and how. See `:help roc-vim` for the rest.
 ## Layout
 
 ```
+versions.sh        the one place naming the Roc commit, the Zig, the Vim tag
 platform/          the channel platform (a plugin is a program)
   main.roc         what a plugin provides, what the host provides
   Vim.roc          the API plugins use
@@ -302,6 +348,7 @@ vim/               the Vim side, installed as a package
   doc/roc.txt      :help roc-vim
 vim-patch/         the +roc feature for Vim, as a patch plus a build script
 compiler-patch/    the Roc patches: a shared-library fix, and the embedding library
+  build-roc.sh     clones Roc at the pinned commit, patches it, builds both
 embed/             the engine: the compiler in a library, so Vim runs source directly
   roc_embed.h      the C API of the embedding library
   engine.c         load a .roc file, run its entrypoints, answer its effects
@@ -316,6 +363,7 @@ test/
   vim_inprocess_test.sh  the same for a plugin loaded into Vim
   vim_source_test.sh     the same for a plugin Vim compiles itself
   vimrc_test.sh          checks the vimrc plugin's settings, mappings and commands
+  vim_modules_test.sh    a plugin split across files: main.roc plus its modules
   embed_test.c       drives the engine without Vim
   inprocess_stub.c   a C plugin for testing Vim's +roc side on its own
 ```
@@ -323,13 +371,14 @@ test/
 ## Testing
 
 ```sh
-cd examples && roc build hello.roc && cd ..
+# The tests find the compiler and the Vim this repository built, so usually:
 python3 test/protocol_test.py      # no Vim needed
 ./test/vim_test.sh                 # starts a real Vim
 
-VIM=/path/to/patched/vim ROC=/path/to/patched/roc ./test/vim_inprocess_test.sh
-VIM=/path/to/patched/vim ./test/vim_source_test.sh
-VIM=/path/to/patched/vim ./test/vimrc_test.sh
+./test/vim_inprocess_test.sh       # finds the compiler and Vim it built
+./test/vim_source_test.sh
+VIM_BIN=/path/to/patched/vim ./test/vimrc_test.sh
+VIM_BIN=/path/to/patched/vim ./test/vim_modules_test.sh
 
 cc -o /tmp/embed_test test/embed_test.c -ldl   # the engine, without Vim
 /tmp/embed_test embed/libroc_vim_embed.so examples-inprocess/hello.roc
@@ -342,10 +391,19 @@ you want to write a plugin in some other language.
 
 ## Notes on versions
 
-Roc is pre-1.0 and its platform ABI still moves. This was built and tested
-against Roc **nightly-2026-09-04** (channel) and roc-lang/roc at
-**1d982dca** with `compiler-patch/` applied (in-process and source), plus Vim
-9.1 and 9.2.1119.
+Roc is pre-1.0 and its platform ABI still moves, so roc-vim pins one compiler
+and uses it for everything: **roc-lang/roc at `1d982dca`** (2026-09-18) with
+`compiler-patch/` applied, built with **Zig 0.16.0**. Vim 9.1 for channel
+plugins, and 9.2.1119 for the `+roc` patch.
+
+A released nightly would do for channel plugins, and one did for a while. But
+in-process plugins need the shared-library fix and source loading needs the
+embedding library, both of which come from `compiler-patch/` — so rather than
+keep two compilers around and have to remember which one built what, there is
+one, and it is a little behind the nightlies on purpose.
+
+The pins are in [`versions.sh`](versions.sh), and `compiler-patch/build-roc.sh`
+reads them.
 
 If a newer compiler rejects the platform, the generated ABI header is the thing
 to refresh — it is what maps the effects in `Host.roc` to C functions in

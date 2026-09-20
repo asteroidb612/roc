@@ -374,12 +374,32 @@ function! roc#shutdown() abort
 endfunction
 
 " Rebuild and restart a plugin whose source was just saved.
+" The plugin a saved file belongs to, or '' if it belongs to none.
+"
+" Usually the file is the plugin. But a plugin can also be a directory of
+" `main.roc` plus the modules it imports, and saving one of those modules
+" should rebuild the plugin just the same.
+function! s:plugin_owning(path) abort
+  let path = fnamemodify(a:path, ':p')
+  for source in roc#sources()
+    if fnamemodify(source, ':p') ==# path
+      return roc#name_of(source)
+    endif
+    if fnamemodify(source, ':t') ==# 'main.roc'
+      let dir = fnamemodify(source, ':p:h') . '/'
+      if stridx(path, dir) == 0
+        return roc#name_of(source)
+      endif
+    endif
+  endfor
+  return ''
+endfunction
+
 function! roc#on_source_written(path) abort
-  let name = roc#name_of(a:path)
-  if empty(filter(roc#sources(), 'roc#name_of(v:val) ==# name'))
-    return
+  let name = s:plugin_owning(a:path)
+  if !empty(name)
+    call roc#restart(name)
   endif
-  call roc#restart(name)
 endfunction
 
 " ---------------------------------------------------------------------------

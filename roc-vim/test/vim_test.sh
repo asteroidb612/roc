@@ -10,11 +10,17 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "$here")
-roc=${ROC:-roc}
-vim_bin=${VIM:-vim}
+. "$repo/versions.sh"
+roc=$(roc_vim_find_roc "$repo")
+vim_bin=$(roc_vim_find_vim "$repo")
 
-command -v "$roc" >/dev/null || { echo "no roc compiler found (set ROC=...)"; exit 2; }
-command -v "$vim_bin" >/dev/null || { echo "no vim found"; exit 2; }
+if [ -z "$roc" ]; then
+    echo "no roc compiler found. Build the one roc-vim uses:"
+    echo "    $repo/compiler-patch/build-roc.sh"
+    echo "or point this run at one: ROC=/path/to/roc $0"
+    exit 2
+fi
+[ -n "$vim_bin" ] || { echo "no vim found"; exit 2; }
 "$vim_bin" --version | grep -q '+channel' || { echo "this vim has no +channel"; exit 2; }
 
 work=$(mktemp -d)

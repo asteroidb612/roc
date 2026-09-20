@@ -57,8 +57,13 @@ augroup roc_vim
   endif
   autocmd VimLeavePre * call roc#shutdown()
   if g:roc_reload_on_write
-    execute 'autocmd BufWritePost ' . expand(g:roc_plugin_dir) . '/*.roc'
-          \ . ' call roc#on_source_written(expand("<afile>:p"))'
+    " Both shapes a plugin can take: one file, or a directory of main.roc plus
+    " the modules it imports.
+    for s:pattern in ['/*.roc', '/*/*.roc']
+      execute 'autocmd BufWritePost ' . expand(g:roc_plugin_dir) . s:pattern
+            \ . ' call roc#on_source_written(expand("<afile>:p"))'
+    endfor
+    unlet! s:pattern
   endif
 augroup END
 

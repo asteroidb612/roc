@@ -13,11 +13,15 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "$here")
-roc=${ROC:-roc}
-vim_bin=${VIM:-vim}
+. "$repo/versions.sh"
+roc=$(roc_vim_find_roc "$repo")
+vim_bin=$(roc_vim_find_vim "$repo")
 
-command -v "$roc" >/dev/null || { echo "SKIP: no roc compiler (set ROC=...)"; exit 0; }
-command -v "$vim_bin" >/dev/null || { echo "SKIP: no vim (set VIM=...)"; exit 0; }
+if [ -z "$roc" ]; then
+    echo "SKIP: no roc compiler; build one with compiler-patch/build-roc.sh"
+    exit 0
+fi
+[ -n "$vim_bin" ] || { echo "SKIP: no vim (set VIM_BIN=...)"; exit 0; }
 if ! "$vim_bin" --version | tr ' ' '\n' | grep -qx '+roc'; then
     echo "SKIP: this vim has no +roc; build one with vim-patch/build-vim.sh"
     exit 0
