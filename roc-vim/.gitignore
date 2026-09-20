@@ -8,13 +8,17 @@
 !/examples/*.roc
 /examples-inprocess/*
 !/examples-inprocess/*.roc
-# ...but the vimrc example is a pair: the plugin and the Vimscript it still
-# needs, with a README explaining the split.
+# ...but the vimrc example is more than one file: the Vimscript it still needs,
+# a README explaining the split, and a directory of its own, because a plugin
+# can be main.roc plus the modules it imports.
 !/examples-inprocess/*.vim
 !/examples-inprocess/README.md
+!/examples-inprocess/*/
+!/examples-inprocess/*/*.roc
 
-# Where vim-patch/build-vim.sh clones and builds Vim.
+# Where the two build scripts clone and build Vim and Roc.
 /vim-patch/build/
+/compiler-patch/build/
 
 # The engine library and the compiler library it is built from: ~340MB of
 # build output, made by embed/build.sh.

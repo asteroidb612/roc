@@ -38,10 +38,12 @@ work=$(mktemp -d)
 trap '[ -n "${ROC_VIM_TEST_KEEP:-}" ] && echo "work directory: $work" || rm -rf "$work"' EXIT
 mkdir -p "$work/plugins"
 
-# The plugin under test, loaded from source. Its platform path is relative to
-# the file, so it is rewritten for the copy.
-sed "s#\"../platform-inprocess/main.roc\"#\"$repo/platform-inprocess/main.roc\"#" \
-    "$repo/examples-inprocess/vimrc.roc" > "$work/plugins/vimrc.roc"
+# The plugin under test, loaded from source. It is a directory — main.roc plus
+# the Notebook module it imports — so the whole thing is copied, and the
+# platform path, which is relative to main.roc, is rewritten for the copy.
+cp -r "$repo/examples-inprocess/vimrc" "$work/plugins/vimrc"
+sed -i "s#\"../../platform-inprocess/main.roc\"#\"$repo/platform-inprocess/main.roc\"#" \
+    "$work/plugins/vimrc/main.roc"
 
 # A repository with a known remote and a known commit, so the GitHub link this
 # plugin builds can be compared against one written out by hand.

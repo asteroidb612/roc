@@ -11,16 +11,22 @@
 ## the plugin manager, `mapleader`, and `set exrc`/`set secure`. Those have to
 ## run before Vim loads any plugin, and this is a plugin.
 ##
+## This one is a directory rather than a single file: the part of it worth
+## testing on its own (which fenced block does the cursor mean?) lives in
+## Notebook.roc, which has no platform in it and so can be run with
+## `roc test`. Vim treats the directory as one plugin either way.
+##
 ##     :RocGithubUrl       yank a github.com link to the line under the cursor
 ##     :RocRunBlock        run the ``` block at or above the cursor, insert output
 ##     :RocVsCode          open the current file and line in VS Code
 ##     :RocYazi            open yazi beside the current file
 ##     :RocCalendar        this week's calendar in a terminal split
 ##     :RocHighlightNotes  re-apply the markdown note highlights
-app [Model, plugin] { vim: platform "../platform-inprocess/main.roc" }
+app [Model, plugin] { vim: platform "../../platform-inprocess/main.roc" }
 
 import vim.Vim
 import vim.Value
+import Notebook
 
 # =============================================================================
 # Where things live
@@ -472,13 +478,16 @@ drop_suffix = |text, suffix|
 
 # =============================================================================
 # The notebook: run the fenced block at the cursor, write the output below it
+#
+# Which block the cursor means is Notebook.find_block, which is pure and has
+# its own tests (`roc test Notebook.roc`). What is left here is the Vim half.
 # =============================================================================
 
 run_block! : I64 => Try({}, _)
 run_block! = |run| {
     lines = Vim.lines!()?
     here = Vim.eval_int!("line('.')")?
-    match find_block(lines, here) {
+    match Notebook.find_block(lines, here) {
         Err(NoBlock) => {
             Vim.error!("no ``` block at or above the cursor")
             Ok({})
@@ -491,76 +500,13 @@ run_block! = |run| {
             for line in Str.split_on(Str.trim_end(output), "\n") {
                 $insert = $insert.append(line)
             }
-            # The original left this fence open, so a second run nested inside
-            # the first one's output.
+            # The original vimrc left this fence open, so a second run nested
+            # inside the first one's output.
             $insert = $insert.append("```")
             Vim.append_lines!(block.close, $insert)
             Ok({})
         }
     }
-}
-
-## The fenced block the cursor is in, or the last one above it.
-##
-## Fences pair up in order — the first opens a block, the second closes it —
-## which is what keeps the cursor sitting *below* a block from pairing that
-## block's closing fence with the next block's opening one.
-find_block : List(Str), I64 -> Try({ open : I64, close : I64, code : List(Str) }, [NoBlock])
-find_block = |lines, here| {
-    var $fences = []
-    var $row = 0
-    for line in lines {
-        $row = $row + 1
-        if Str.starts_with(Str.trim_start(line), "```") {
-            $fences = $fences.append($row)
-        } else {
-            {}
-        }
-    }
-
-    var $open = 0
-    var $close = 0
-    var $index = 0
-    while $index + 1 < List.len($fences) {
-        opens = row_at($fences, $index)
-        closes = row_at($fences, $index + 1)
-        if opens <= here {
-            $open = opens
-            $close = closes
-        } else {
-            {}
-        }
-        $index = $index + 2
-    }
-
-    if $open == 0 {
-        Err(NoBlock)
-    } else {
-        Ok({ open: $open, close: $close, code: between(lines, $open + 1, $close - 1) })
-    }
-}
-
-row_at : List(I64), U64 -> I64
-row_at = |rows, index|
-    match List.get(rows, index) {
-        Ok(row) => row
-        Err(_) => 0
-    }
-
-## The lines from `first` to `last`, counting from 1 as Vim does.
-between : List(Str), I64, I64 -> List(Str)
-between = |lines, first, last| {
-    var $chosen = []
-    var $row = 0
-    for line in lines {
-        $row = $row + 1
-        if $row >= first and $row <= last {
-            $chosen = $chosen.append(line)
-        } else {
-            {}
-        }
-    }
-    $chosen
 }
 
 # =============================================================================
