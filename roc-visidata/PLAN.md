@@ -560,59 +560,48 @@ clear message rather than a crash through the wrong offsets.
 
 ## Milestones
 
-Each one ends with something that runs and a test that proves it.
+All seven are built and tested; `test/run.sh` runs the suites. What each one
+turned out to need, rather than what it was expected to need:
 
-**M0 — engine builds and answers (no VisiData).**
-`engine/` with `host.c` and `engine.c`, linked against `libroc_embed.a` into
-`libroc_vd_embed.so`. `test/engine_test.py` opens it with `ctypes`, hands it a
-stub api table, loads `examples/hello.roc`, and asserts that the plugin asked
-to run the statement it was supposed to. No VisiData, no terminal.
-*Proves: the embedded compiler works from Python.*
+**M0 — engine builds and answers (no VisiData).** ✅
+`engine/engine.c` over `libroc_embed`, driven from Python by `ctypes` with a
+stub in place of VisiData. `test/engine_test.py`.
 
-**M1 — the platform.**
-`platform/` with `main.roc`, `Host.roc`, `VisiData.roc`, `Value.roc`
-(from roc-vim). `init!`/`handle!`, boxed model, JSON events. `examples/hello.roc`
-adds a command and reports the cursor value.
-*Proves: a plugin can be written.*
+**M1 — the platform.** ✅
+Four platform roots sharing `VisiData.roc` and `Value.roc`. Every root has to
+import each module it exposes, and a type error inside a platform module panics
+the compiler rather than reporting — both found the hard way.
 
-**M2 — inside VisiData.**
-`python/visidata_roc/`: discovery in `options.roc_plugin_dir`, load at startup,
-command trampolines, `:RocPlugins` sheet with transport and status, reload on
-save, `vd.roc.dispatch`. Tested by driving a real `vd` under a pty and asserting
-on the status line, mirroring `roc-vim/test/vim_test.sh`.
-*Proves: the headline feature. Ship-able on its own.*
+**M2 — inside VisiData.** ✅
+`python/visidata_roc/`: discovery, dispatch, hooks, reload-on-save,
+`:RocPlugins`. `test/visidata_test.py` drives the real thing headless.
 
-**M3 — `.visidatarc.roc`.**
-`platform/config.roc`, option and keybinding setters, load ordering, an example
-config that a person would actually use.
-*Proves: configuration in Roc.*
+**M3 — `.visidatarc.roc`.** ✅
+`platform/config.roc` and `examples/visidatarc.roc`, which really does set
+`disp_float_fmt` and bind keys.
 
-**M4 — Roc owning the data.**
-A Roc loader for a format VisiData has none for: Roc parses the file into
-columns it keeps, and only the cells on screen cross into Python. Then
-whole-column operations over those columns — sort, filter, aggregate. This is
-where the speed case lives (`bench/RESULTS.md` §3), so it is also where the
-first end-to-end benchmark against VisiData's own loader belongs.
-*Proves: the speed claim, on the architecture that can actually support it.*
+**M4 — Roc owning the data.** ✅
+`platform/loader.roc` and `examples/tsv_loader.roc`, with `bench/loader_bench.py`
+against VisiData's own tsv loader. It reuses the plugin entrypoints rather than
+adding new ones, because `Box.unbox` consumes the box and an accessor that did
+not hand a new one back would free the table. The measurement is the milestone:
+interpreted it loses by 242×, compiled it wins by 1.44–1.81×.
 
-**M5 — tier 2, and the bulk path over Python rows.**
-`platform/targets/` and `libhost.a` for `output: Shared`; background compile
-with `@asyncthread`; hot swap; artifact cache keyed by source hash; a plugin
-that needs tier 2 saying so when no compiler is installed. Then `roc_vd_map`
-and `RocColumn` for columns whose data is VisiData's — worth having for the
-language and the type checking, at a measured ceiling of about 1.7×, and
-documented as such.
-*Proves: computation in Roc is fast when it is compiled, and honestly bounded
-when the data belongs to Python.*
+**M5 — tier 2.** ✅
+The linked half of `host.c` (the runtime set plus a `setjmp` guard), `libhost.a`
+per target, and `tier2.py` building off the UI thread and swapping under the
+same handle. Every platform root needs a `targets:` section or `roc build`
+reports "no platform found". `test/tier2_test.py`, which skips cleanly with no
+compiler installed.
 
-**M6 — packaging.**
-Wheels for Linux x86-64 and arm64 with the engine inside; `roc-visidata
-build-engine` for everyone else; README, install docs, and a straight account
-of the limits above.
+**M6 — packaging.** ✅
+`python/pyproject.toml`, the READMEs, and `test/vd_pty_test.py` — the actual
+`vd` binary in a terminal, which is what caught a plugin outside the repository
+being unable to reach the platform, and the example's key already belonging to
+VisiData.
 
-M0–M3 is the half that works interpreted, needs no tier 2, and is mostly
-roc-vim with the Vim patch deleted. M4 is where the speed case has to be
-earned.
+M0–M3 is the half that works interpreted and needs no compiler. M4 and M5 are
+where the speed case is, and it is earned only when they are taken together.
 
 ## Risks and open questions
 
