@@ -232,10 +232,9 @@ VisiData := [].{
         items = column!(name)?
         var $values = []
         for item in items {
-            match item {
-                Value.Float(f) => $values = $values.append(f)
-                Value.Int(i) => $values = $values.append(I64.to_frac(i))
-                _ => {}
+            match Value.as_f64(item) {
+                Ok(number) => { $values = $values.append(number) }
+                Err(_) => {}
             }
         }
         Ok($values)

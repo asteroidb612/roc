@@ -9,12 +9,10 @@
 ## available, and it is the shape a Roc-owned column wants either way.
 platform ""
     requires {
-        {} for column : {
-            ## Compute the column's values from the source column's values.
-            map_floats : List(F64) -> List(F64),
-            ## The same, for a column of text.
-            map_strs : List(Str) -> List(Str),
-        }
+        ## Compute the column's values from the source column's values.
+        map_floats : List(F64) -> List(F64),
+        ## The same, for a column of text.
+        map_strs : List(Str) -> List(Str)
     }
     exposes [VisiData, Value]
     packages {}
@@ -34,7 +32,7 @@ import VisiData
 import Value
 
 map_floats_for_host : List(F64) -> List(F64)
-map_floats_for_host = |values| (column.map_floats)(values)
+map_floats_for_host = |values| map_floats(values)
 
 map_strs_for_host : List(Str) -> List(Str)
-map_strs_for_host = |values| (column.map_strs)(values)
+map_strs_for_host = |values| map_strs(values)

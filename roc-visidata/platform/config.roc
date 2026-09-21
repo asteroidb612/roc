@@ -5,10 +5,8 @@
 ## config still wins on anything both of them set.
 platform ""
     requires {
-        {} for config : {
-            ## Set VisiData up. Called once, at startup.
-            main! : () => Try({}, [VdErr(Str), ..]),
-        }
+        ## Set VisiData up. Called once, at startup.
+        main! : () => Try({}, [VdErr(Str), ..])
     }
     exposes [VisiData, Value]
     packages {}
@@ -26,7 +24,7 @@ import Value
 
 config_for_host! : () => {}
 config_for_host! = || {
-    match (config.main!)() {
+    match main!() {
         Ok(_) => {}
         Err(err) => {
             Host.message!("roc-visidata: .visidatarc.roc: ${Str.inspect(err)}", True)
