@@ -13,7 +13,7 @@ Every number below is the best of 3–5 runs. Reproduce with `./run.sh`.
 | --- | --- |
 | Can a plugin be compiled in-process at startup? | Yes for one (154 ms), no for ten (~1.5 s). Compile lazily. |
 | Does the interpreted bulk path beat Python? | **No.** It is 22× slower than VisiData's own expression column and 90× slower than a list comprehension. |
-| Then where is the speed? | In a compiled loader, and there it is real: it parses 1.4–2.1× faster than VisiData's own tsv loader, reads a numeric column 5.3× faster, and runs ~650× faster than the same loader interpreted. Tier 2 is a precondition, not an optimization. |
+| Then where is the speed? | In a compiled loader, and there it is real: it parses 2.0× faster than VisiData's own tsv loader, reads a numeric column 5.5× faster, and runs ~24× faster than the same loader interpreted. Tier 2 is a precondition, not an optimization. |
 
 ## 1. Compile latency
 
@@ -191,6 +191,27 @@ architecture, on the compiled tier, and by nothing else.
 Building it costs **2.9 s cold** for a 164 KB library, and 0.1 ms once cached
 by the hash of the source, so the second run of a plugin is native from the
 first keystroke.
+
+### Getting the file in
+
+Loading a file also has a cost that is not parsing it. A loader asked VisiData
+for the bytes through `eval!`, which meant the whole file was JSON encoded on
+the way out and JSON decoded on the way in. On a 4.6 MB file that was **21.6 ms
+of a 100 ms load** — and in the interpreter, where decoding is interpreted too,
+it was most of the load.
+
+`Host.read_file!` gives the bytes a channel of their own:
+
+| 4.6 MB file, 200k rows | before | after | |
+| --- | --- | --- | --- |
+| getting the bytes into Roc | 21.6 ms | **3.6 ms** | 6× |
+| parse, compiled | 100.2 ms | **46.0 ms** | 2.2× |
+| parse, interpreted | 291,694 ns/row | **17,794 ns/row** | 16× |
+
+Against VisiData's own tsv loader that takes the compiled parse from 1.8× to
+**2.0× faster** (376.6 ns/row against 751.2). It also takes the interpreted
+loader from 400× slower than VisiData to about 24× — still not something to
+use on a large file, but no longer absurd.
 
 ### Closing the last gap: numbers as numbers
 

@@ -50,6 +50,7 @@ static void *resolve_hosted(void *ctx, const char *symbol, size_t len) {
     if (symbol_is(symbol, len, "roc_vd_host_message")) return (void *)roc_vd_host_message;
     if (symbol_is(symbol, len, "roc_vd_host_reply")) return (void *)roc_vd_host_reply;
     if (symbol_is(symbol, len, "roc_vd_host_reply_floats")) return (void *)roc_vd_host_reply_floats;
+    if (symbol_is(symbol, len, "roc_vd_host_read_file")) return (void *)roc_vd_host_read_file;
     if (symbol_is(symbol, len, "roc_vd_host_id")) return (void *)roc_vd_host_id;
     return NULL;
 }

@@ -47,6 +47,7 @@ platform ""
         "roc_vd_host_message": Host.message!,
         "roc_vd_host_reply": Host.reply!,
         "roc_vd_host_reply_floats": Host.reply_floats!,
+        "roc_vd_host_read_file": Host.read_file!,
         "roc_vd_host_id": Host.id!,
     }
     # The compiled tier; see platform/build.sh. The interpreted tier ignores it.

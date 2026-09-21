@@ -184,6 +184,25 @@ VisiData := [].{
     option! : Str => Try(Value, [VdErr(Str), ..])
     option! = |name| eval!("getattr(vd.options, ${quote(name)})")
 
+    ## Read a file, for a loader that will parse it itself.
+    ##
+    ## The bytes come across raw rather than as JSON, which is most of what
+    ## getting a file into Roc used to cost. Nothing comes back for an empty
+    ## file and for an unreadable one alike, so the second, cheap question is
+    ## only asked when the answer was empty.
+    read_file! : Str => Try(Str, [VdErr(Str), ..])
+    read_file! = |path| {
+        text = Host.read_file!(path)
+        if Str.is_empty(text) {
+            match eval!("_roc_read_error()")? {
+                Value.Null => Ok("")
+                reason => Err(VdErr(Value.str_or(reason, "could not read the file")))
+            }
+        } else {
+            Ok(text)
+        }
+    }
+
     ## The handle VisiData loaded this plugin under.
     id! : () => Str
     id! = || Host.id!()

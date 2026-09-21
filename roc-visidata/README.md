@@ -151,6 +151,9 @@ A loader is where the speed is, so it gets the most care:
   because a replacement plugin has never read the file — and because
   interpreted parsing is ~240 µs/row against 0.4 µs compiled, so the build is
   the fast path, not a delay. It is cached after the first time.
+- A loader gets a file's bytes through **`VisiData.read_file!`**, which hands
+  them over raw. Asking through `eval!` instead would JSON-encode the whole
+  file on the way past — a fifth of the cost of loading it.
 - A column that looks numeric is fetched **as numbers**, through
   `col_f64` and `Host.reply_floats!`, which hands the bytes over rather than a
   JSON document: 41.6 ns/row against VisiData's 222.
@@ -184,9 +187,9 @@ happened and leave VisiData running.
   about 1.7× there.
 - So the speed case belongs with **Roc owning the data** — a loader whose
   columns never cross per row — rather than with Roc expression columns over
-  Python rows. Compiled, that pays: a Roc TSV loader **parses 1.4–2.1× faster
-  than VisiData's own**, reads a whole numeric column **5.3× faster** (1.76×
-  through VisiData's own per-row `getValue`), and runs ~650× faster than the
+  Python rows. Compiled, that pays: a Roc TSV loader **parses 2.0× faster
+  than VisiData's own**, reads a whole numeric column **5.5× faster** (1.76×
+  through VisiData's own per-row `getValue`), and runs ~24× faster than the
   same loader interpreted.
 
 Startup: 15.7 ms to compile a plugin that imports nothing, ~154 ms for a real

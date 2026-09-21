@@ -197,6 +197,24 @@ void roc_vd_host_reply(RocStr arg0) {
     roc_str_decref(arg0);
 }
 
+RocStr roc_vd_host_read_file(RocStr arg0) {
+    char *bytes;
+    size_t len = 0;
+    RocStr result;
+
+    if (current.api == NULL) {
+        roc_str_decref(arg0);
+        return roc_str_from("", 0);
+    }
+    bytes = current.api->read_file(roc_str_bytes(&arg0), roc_str_len(&arg0), &len);
+    roc_str_decref(arg0);
+
+    if (bytes == NULL) return roc_str_from("", 0);
+    result = roc_str_from(bytes, len);
+    current.api->free_result(bytes);
+    return result;
+}
+
 void roc_vd_host_reply_floats(RocList values) {
     size_t bytes = values.length * sizeof(double);
     double *copy = malloc(bytes == 0 ? sizeof(double) : bytes);

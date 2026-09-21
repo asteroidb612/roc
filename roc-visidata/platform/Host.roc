@@ -30,6 +30,13 @@ Host :: [].{
     ## instead, which is a memcpy on both sides.
     reply_floats! : List(F64) => {}
 
+    ## Read a file and return its bytes, or "" if it could not be read.
+    ##
+    ## A loader could ask for this through `eval!`, but then the whole file is
+    ## JSON encoded on the way out and decoded on the way in, which is about a
+    ## fifth of what loading a file costs.
+    read_file! : Str => Str
+
     ## The handle VisiData loaded this plugin under.
     id! : () => Str
 }

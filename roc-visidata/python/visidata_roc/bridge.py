@@ -18,6 +18,7 @@ class VisiDataBridge:
 
     def __init__(self):
         self.last_error = None
+        self.last_read_error = None
 
     # -- what the engine calls ------------------------------------------------
 
@@ -33,6 +34,11 @@ class VisiDataBridge:
             vd.warning(text)
         else:
             vd.status(text)
+
+    def read_file(self, path):
+        """The bytes of a file, for a loader that will parse them itself."""
+        with open(os.path.expanduser(path), "rb") as f:
+            return f.read()
 
     def jsonable(self, value):
         return jsonable(value)
@@ -64,6 +70,15 @@ def jsonable(value):
 def _roc_json(text):
     """Decode the JSON argument list `VisiData.call!` sends."""
     return json.loads(text)
+
+
+def _roc_read_error():
+    """Why the last read_file! failed, or None if it did not.
+
+    A loader asks this only when it got nothing back, so an empty file and an
+    unreadable one can be told apart.
+    """
+    return vd.rocEngine.evaluator.last_read_error
 
 
 def _roc_read_file(path):
@@ -209,6 +224,7 @@ def _roc_push_sheet(name, rows):
 HELPERS = {
     "_roc_json": _roc_json,
     "_roc_read_file": _roc_read_file,
+    "_roc_read_error": _roc_read_error,
     "_roc_add_command": _roc_add_command,
     "_roc_bind_key": _roc_bind_key,
     "_roc_subscribe": _roc_subscribe,

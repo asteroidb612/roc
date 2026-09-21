@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import threading
 
-from ._ffi import PLUGIN_ABI_VERSION, EngineError
+from ._ffi import ABI_VERSION, PLUGIN_ABI_VERSION, EngineError
 
 CACHE = os.path.expanduser("~/.cache/roc-visidata")
 
@@ -53,7 +53,11 @@ def artifact_for(source):
     with open(source, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()[:16]
     name = os.path.basename(source).removesuffix(".roc")
-    return os.path.join(CACHE, f"{name}-{digest}.so")
+    # The boundary's versions are part of the key: a library built against an
+    # older callback table would refuse the one it is handed, and finding that
+    # out at load time is worse than rebuilding.
+    return os.path.join(
+        CACHE, f"{name}-{digest}-abi{ABI_VERSION}.{PLUGIN_ABI_VERSION}.so")
 
 
 def build(source, compiler=None, timeout=300):

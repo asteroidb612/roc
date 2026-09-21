@@ -21,7 +21,7 @@ loader = { load!, columns, nrows, cell, col_f64 }
 
 load! : Str => Try(Table, _)
 load! = |path| {
-    text = VisiData.eval_str!("_roc_read_file(${VisiData.quote(path)})")?
+    text = VisiData.read_file!(path)?
     if text == "" {
         Ok({ header: [], rows: [] })
     } else {

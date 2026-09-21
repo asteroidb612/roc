@@ -14,8 +14,11 @@ import json
 import os
 import sys
 
-#: The callback table in platform/roc_vd_api.h.
-ABI_VERSION = 1
+#: The engine's own C API, in engine/roc_vd_engine.h.
+ENGINE_ABI_VERSION = 1
+
+#: The callback table in platform/roc_vd_api.h. At 2 since it gained read_file.
+ABI_VERSION = 2
 
 #: What a compiled plugin exports; see platform/host.c. Separate from the
 #: table above, and at 2 because it became per-instance.
@@ -33,6 +36,9 @@ EVAL_FN = ctypes.CFUNCTYPE(
 FREE_FN = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
 MESSAGE_FN = ctypes.CFUNCTYPE(
     None, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int)
+READ_FILE_FN = ctypes.CFUNCTYPE(
+    ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t,
+    ctypes.POINTER(ctypes.c_size_t))
 
 
 class RocVdApi(ctypes.Structure):
@@ -48,6 +54,7 @@ class RocVdApi(ctypes.Structure):
         ("eval_json", EVAL_FN),
         ("free_result", FREE_FN),
         ("message", MESSAGE_FN),
+        ("read_file", READ_FILE_FN),
     ]
 
 
@@ -93,10 +100,11 @@ class Engine:
         self._declare()
 
         engine_abi = self.lib.roc_vd_engine_abi_version()
-        if engine_abi != ABI_VERSION:
+        if engine_abi != ENGINE_ABI_VERSION:
             raise EngineError(
-                f"the engine at {path} speaks ABI version {engine_abi}, "
-                f"and this visidata_roc speaks {ABI_VERSION}")
+                f"the engine at {path} speaks engine ABI {engine_abi}, and "
+                f"this visidata_roc speaks {ENGINE_ABI_VERSION}; rebuild it "
+                f"with engine/build.sh")
 
         # `evaluator` is what actually reaches into VisiData; keeping it behind
         # an object rather than importing vd here is what lets the engine be
@@ -111,6 +119,7 @@ class Engine:
             EVAL_FN(self._eval_json),
             FREE_FN(self._free_result),
             MESSAGE_FN(self._message),
+            READ_FILE_FN(self._read_file),
         )
         self.api = RocVdApi(ABI_VERSION, *self._callbacks)
         self.api_ref = ctypes.byref(self.api)
@@ -166,6 +175,27 @@ class Engine:
 
     def _free_result(self, address):
         self._owned.pop(address, None)
+
+    def _read_file(self, path, length, out_len):
+        """Hand a loader the bytes of a file, without encoding them.
+
+        The last error is kept so `VisiData.read_file!` can ask what went
+        wrong: from Roc's side a failure and an empty file both arrive as "".
+        """
+        name = path[:length].decode("utf-8", "replace")
+        try:
+            data = self.evaluator.read_file(name)
+            self.evaluator.last_read_error = None
+        except Exception as e:
+            self.evaluator.last_read_error = f"{type(e).__name__}: {e}"
+            return None
+
+        buffer = ctypes.create_string_buffer(data, len(data))
+        address = ctypes.cast(buffer, ctypes.c_void_p).value
+        self._owned[address] = buffer
+        if out_len:
+            out_len[0] = len(data)
+        return address
 
     def _message(self, text, length, is_error):
         try:
