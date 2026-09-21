@@ -19,7 +19,8 @@ sys.path.insert(0, os.path.join(HERE, "..", "python"))
 from visidata import vd                                    # noqa: E402
 
 import visidata_roc                                        # noqa: E402,F401
-from visidata_roc.loader import RocFloatColumn             # noqa: E402
+from visidata_roc.loader import (BLOCK, RocFloatColumn,    # noqa: E402
+                                 RocTextColumn)
 from visidata_roc.tier2 import find_compiler               # noqa: E402
 
 LOADER = os.path.join(HERE, "..", "examples", "tsv_loader.roc")
@@ -95,10 +96,22 @@ def main():
         check(all(isinstance(v, float) for v in values),
               "and they are floats, not text")
 
-        # Text still reads correctly, block by block.
+        # Text reads block by block while browsing, and whole once scanned.
+        check(isinstance(name, RocTextColumn), "the text column is the adaptive one")
         check(name.getValue(a.rows[0]) == "row0", "text cells read from the first block")
         check(name.getValue(a.rows[-1]) == f"row{rows - 1}",
               "and from the last, which needs another block")
+        check(name._whole is None,
+              "browsing a few rows does not pull the whole column")
+
+        if rows > BLOCK * 5:
+            name.recalc()
+            scanned = [name.getValue(r) for r in a.rows]
+            check(name._whole is not None,
+                  "scanning every row switches it to the whole column")
+            check(scanned[0] == "row0" and scanned[-1] == f"row{rows - 1}",
+                  "and the values are the same either way")
+            check(len(scanned) == rows, "with one per row")
 
         # A loader can claim a file extension, so `vd file.rtsv` just works.
         from visidata import Path

@@ -20,6 +20,14 @@ from ._ffi import EngineError
 #: scrolling without asking again.
 BLOCK = 256
 
+#: How many blocks one column may pull before it is treated as a scan and
+#: fetched whole. Browsing touches one or two; sorting touches all of them.
+SCAN_AFTER_BLOCKS = 4
+
+#: What `col_str` joins a column's values with: ASCII unit separator, which is
+#: what it is for and cannot occur in a field of text.
+UNIT = "\x1f"
+
 
 class RocFloatColumn(Column):
     """A numeric column fetched from Roc as numbers, not as text.
@@ -53,6 +61,57 @@ class RocFloatColumn(Column):
 
     def recalc(self, sheet=None):
         self._values = None
+        super().recalc(sheet)
+
+
+class RocTextColumn(Column):
+    """A text column that reads blocks while you browse and the whole column
+    once you start scanning.
+
+    Both accesses matter and they want opposite things. Drawing a screen wants
+    the fifty rows on it and nothing more; sorting or aggregating wants every
+    row, and getting there a block at a time costs one request per block with
+    every other column's values riding along in each answer. So this watches:
+    a column that has pulled more than a few blocks is being scanned, and
+    switches to fetching itself whole, joined rather than encoded as JSON.
+    """
+
+    def __init__(self, name, index=0, **kwargs):
+        super().__init__(name, **kwargs)
+        self.index = index
+        self._blocks_pulled = set()
+        self._whole = None
+
+    def calcValue(self, row):
+        if self._whole is not None:
+            return self._whole[row] if row < len(self._whole) else None
+
+        self._blocks_pulled.add(row // BLOCK)
+        if len(self._blocks_pulled) > SCAN_AFTER_BLOCKS:
+            self._fetch_whole()
+            if self._whole is not None:
+                return self._whole[row] if row < len(self._whole) else None
+
+        fields = self.sheet._row(row)
+        return fields[self.index] if self.index < len(fields) else None
+
+    def _fetch_whole(self):
+        raw = self.sheet.plugin.event("loader", {"q": "col_str", "col": self.index})
+        if not isinstance(raw, str):
+            self._whole = None
+            self._blocks_pulled.clear()      # do not ask again every row
+            return
+        count, _, body = raw.partition(UNIT)
+        try:
+            expected = int(count)
+        except ValueError:
+            self._whole = None
+            return
+        self._whole = body.split(UNIT) if expected else []
+
+    def recalc(self, sheet=None):
+        self._whole = None
+        self._blocks_pulled = set()
         super().recalc(sheet)
 
 
@@ -103,7 +162,7 @@ class RocSheet(Sheet):
             if index in numeric:
                 self.addColumn(RocFloatColumn(name, index=index))
             else:
-                self.addColumn(Column(name, getter=self._getter(index)))
+                self.addColumn(RocTextColumn(name, index=index))
 
         for row in range(answer.get("nrows", 0)):
             yield row

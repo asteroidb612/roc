@@ -241,8 +241,48 @@ VisiData's 341, or 1.76×**. The ~150 ns/row difference between 41.6 and 194 is
 `getValue` itself, and no loader can do anything about it — it is the same
 per-row Python floor §3 measured from the other side.
 
-The screenful, which is what the design is actually built around, costs the
-same as VisiData's (0.08 ms against 0.04 ms, both negligible).
+### And text, which is most columns
+
+Numbers were the easy half. A column of text has no typed channel to hand it
+over on, and going through the block fetch meant one request per 256 rows with
+every other column's values riding along in each answer — 3,569 ns/row, about
+15× worse than VisiData reading its own.
+
+It does not need a new channel, only a cheaper encoding: `col_str` joins the
+column with U+001F, the unit separator, which is what that character is for and
+cannot occur in a field of text. Nothing is escaped, and Python splits it in
+one call.
+
+| whole text column, 200k rows | ns/row | |
+| --- | --- | --- |
+| Roc, every field as JSON (before) | 3,569 | 15× worse |
+| VisiData reading its own rows | 234 | |
+| Roc, joined | **75.2** | **3.1× faster** |
+
+Browsing and scanning want opposite things, so `RocTextColumn` does both: it
+reads blocks while you look at a screen, and once a column has pulled more than
+four blocks — which browsing never does and sorting always does — it fetches
+itself whole. Through VisiData's own `getValue` that is **217 ns/row against
+241**, where it had been fifteen times slower.
+
+### Where a compiled loader stands
+
+At 200,000 rows, against VisiData's own tsv loader:
+
+| | VisiData | Roc compiled | |
+| --- | --- | --- | --- |
+| parse the file | 751 ns/row | 369 ns/row | **2.0× faster** |
+| a screenful | 0.04 ms | 0.09 ms | the same, both negligible |
+| numeric column, fetched | 234 ns/row | 43.8 ns/row | **5.3× faster** |
+| text column, fetched | 234 ns/row | 75.2 ns/row | **3.1× faster** |
+| numeric column, through `getValue` | 341 ns/row | 194 ns/row | 1.76× |
+| text column, through `getValue` | 241 ns/row | 217 ns/row | 1.11× |
+
+The two `getValue` rows are the same measurement as the two above them with
+VisiData's per-row machinery added to both sides. That machinery is ~150 ns/row
+and no loader can do anything about it — it is §3's floor, seen from the other
+side. It is also why the fetched numbers matter more than they look: they are
+what any future path that does not go through `getValue` would get.
 
 ## 5. Things found along the way
 

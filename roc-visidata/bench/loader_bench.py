@@ -146,8 +146,16 @@ def main():
         compiled.event("loader", {"q": "col_f64", "col": 1})
         return compiled.take_floats()
 
-    values, _ = timed("whole column, typed", typed_column, N)
+    values, _ = timed("numeric column, typed", typed_column, N)
     print(f"    ({len(values)} numbers, first {values[:3]})")
+
+    def text_column():
+        raw = compiled.event("loader", {"q": "col_str", "col": 0})
+        count, _, body = raw.partition("\x1f")
+        return body.split("\x1f") if int(count) else []
+
+    texts, _ = timed("text column, joined", text_column, N)
+    print(f"    ({len(texts)} strings, first {texts[:3]})")
 
     print("\nThe JSON row is every field of every row encoded as text, which is "
           "what\nasking Roc for everything at once used to cost. The typed row "

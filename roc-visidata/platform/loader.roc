@@ -15,6 +15,7 @@
 ##   {"q":"cell","row":R,"col":C} -> {"ok":true,"cell":"..."}
 ##   {"q":"rows","from":A,"to":B} -> {"ok":true,"rows":[[...],...]}
 ##   {"q":"col_f64","col":C}     -> the column's numbers, through reply_floats!
+##   {"q":"col_str","col":C}     -> the column's text, joined by U+001F
 ##
 ## It reuses the plugin entrypoints, so the engine needs to know nothing about
 ## loaders: the table is the model the host holds between calls.
@@ -33,6 +34,8 @@ platform ""
             ## Anything that is not a number should come back as NaN, so the
             ## list still lines up with the rows.
             col_f64 : table, I64 -> List(F64),
+            ## One whole column as text, for the same reason.
+            col_str : table, I64 -> List(Str),
         }
     }
     exposes [VisiData, Value]
@@ -104,6 +107,14 @@ handle_for_host! = |boxed, request_json| {
                         "{\"ok\":true,\"cell\":${Value.to_str(Value.Text(text))}}"
                     } else if request.q == "rows" {
                         rows_json(table, request.from, request.to)
+                    } else if request.q == "col_str" {
+                        # Joined rather than encoded as JSON: escaping every
+                        # value costs more than everything else in the answer.
+                        # U+001F is the unit separator, which is what it is
+                        # for, and cannot occur in a field of text.
+                        texts = (loader.col_str)(table, request.col)
+                        count = I64.to_str(len_i64(texts))
+                        "${count}\u(1f)${Str.join_with(texts, "\u(1f)")}"
                     } else if request.q == "col_f64" {
                         # Answered out of band: the numbers go back as bytes
                         # rather than as JSON, which for a whole column is
@@ -138,11 +149,7 @@ rows_json : Table, I64, I64 -> Str
 rows_json = |table, from, to| {
     total = (loader.nrows)(table)
     last = if to > total { total } else { to }
-    width =
-        match List.len((loader.columns)(table)).to_i64_try() {
-            Ok(n) => n
-            Err(_) => 0
-        }
+    width = len_i64((loader.columns)(table))
 
     var $rows = []
     var $row = from
@@ -158,6 +165,14 @@ rows_json = |table, from, to| {
     }
     "{\"ok\":true,\"rows\":${Value.to_str(Value.Array($rows))}}"
 }
+
+## `List.len` as an I64, which is what every index here is.
+len_i64 : List(a) -> I64
+len_i64 = |items|
+    match List.len(items).to_i64_try() {
+        Ok(n) => n
+        Err(_) => 0
+    }
 
 ## What a plugin's error actually said, rather than how it is spelled.
 reason_of : [VdErr(Str), ..] -> Str

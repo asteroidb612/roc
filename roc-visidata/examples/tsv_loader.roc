@@ -17,7 +17,7 @@ Table : {
     rows : List(List(Str)),
 }
 
-loader = { load!, columns, nrows, cell, col_f64 }
+loader = { load!, columns, nrows, cell, col_f64, col_str }
 
 load! : Str => Try(Table, _)
 load! = |path| {
@@ -84,6 +84,20 @@ col_f64 = |table, column|
                             Err(_) => F64.nan
                         }
                     Err(_) => F64.nan
+                })
+        Err(_) => []
+    }
+
+## One column as text. Missing fields come back empty rather than missing, so
+## the list still lines up with the rows.
+col_str : Table, I64 -> List(Str)
+col_str = |table, column|
+    match column.to_u64_try() {
+        Ok(c) =>
+            List.map(table.rows, |fields|
+                match List.get(fields, c) {
+                    Ok(text) => text
+                    Err(_) => ""
                 })
         Err(_) => []
     }
