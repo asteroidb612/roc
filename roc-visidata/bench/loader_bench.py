@@ -84,6 +84,10 @@ def main():
 
     # ---- the Roc loader -------------------------------------------------
     print("\nRoc loader (the table stays in Roc):")
+    # Measure the interpreted tier as itself: with a compiler on PATH the
+    # manager would upgrade this plugin to native in the background and swap
+    # it out mid-benchmark.
+    vd.options.roc_compile = False
     plugin = vd.rocLoad(os.path.join(HERE, "..", "examples", "tsv_loader.roc"))
     if plugin is None:
         print("  could not load tsv_loader.roc", file=sys.stderr)
@@ -100,10 +104,35 @@ def main():
     timed("whole column",
           lambda: plugin.event("loader", {"q": "rows", "from": 0, "to": N}), N, iters=1)
 
-    print("\nNote: the Roc 'whole column' request returns every field of every "
-          "row as JSON,\nwhich is the honest cost of asking Roc for everything "
-          "at once today.\nThe screenful is the case the design is actually "
-          "built around.")
+    # ---- the same loader, compiled --------------------------------------
+    from visidata_roc.tier2 import CompiledPlugin, build, find_compiler
+
+    if not find_compiler():
+        print("\nNo roc compiler on PATH, so the compiled tier is not measured.")
+        return 0
+
+    print("\nRoc loader, compiled:")
+    source = os.path.join(HERE, "..", "examples", "tsv_loader.roc")
+    t0 = time.perf_counter()
+    library = build(source)
+    print(f"  (built in {time.perf_counter() - t0:.1f}s, "
+          f"{os.path.getsize(library) / 1024:.0f} KB)")
+
+    compiled = CompiledPlugin(vd.rocEngine, source, library, 4242)
+    answer, _ = timed("parse", lambda: compiled.event("loader", {"q": "load", "path": PATH}), N)
+    if not answer or not answer.get("ok"):
+        print(f"  compiled loader failed: {answer}", file=sys.stderr)
+        return 1
+
+    timed("screenful (50 rows x 3 cols)",
+          lambda: compiled.event("loader", {"q": "rows", "from": 0, "to": 50}))
+    timed("whole column",
+          lambda: compiled.event("loader", {"q": "rows", "from": 0, "to": N}), N, iters=1)
+
+    print("\nNote: the 'whole column' request returns every field of every row "
+          "as JSON,\nwhich is the honest cost of asking Roc for everything at "
+          "once today.\nThe screenful is the case the design is actually built "
+          "around.")
     return 0
 
 

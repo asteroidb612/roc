@@ -150,11 +150,19 @@ Options: `roc_plugin_dir` (default `~/.visidata/roc`), `roc_engine`,
   about 1.7× there.
 - So the speed case belongs with **Roc owning the data** — a loader whose
   columns never cross per row — rather than with Roc expression columns over
-  Python rows.
+  Python rows. Compiled, that pays: a Roc TSV loader parses **1.44× faster
+  than VisiData's own at 50k rows and 1.81× faster at 200k**, and 648× faster
+  than the same loader interpreted.
 
 Startup: 15.7 ms to compile a plugin that imports nothing, ~154 ms for a real
 one. Plugins are compiled when first needed rather than all at startup, because
 ten of them eagerly would be over a second.
+
+The compiled tier is automatic when a `roc` compiler is on PATH: a plugin loads
+interpreted, a native build runs on a background thread, and the next event goes
+to the compiled library. Building costs ~2.9 s once and 0.1 ms thereafter,
+cached by the hash of the source. With no compiler installed nothing happens and
+the plugin stays interpreted, which is fine for everything but computation.
 
 ## Limits, honestly
 

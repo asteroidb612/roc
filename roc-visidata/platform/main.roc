@@ -26,6 +26,7 @@ platform ""
     hosted {
         "roc_vd_host_exec": Host.exec!,
         "roc_vd_host_eval": Host.eval!,
+        "roc_vd_host_message": Host.message!,
         "roc_vd_host_reply": Host.reply!,
         "roc_vd_host_id": Host.id!,
     }

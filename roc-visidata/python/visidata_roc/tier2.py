@@ -15,6 +15,7 @@ contents, so the second run of a plugin is native from the first keystroke.
 import ctypes
 import hashlib
 import os
+import platform
 import shutil
 import subprocess
 import threading
@@ -28,6 +29,19 @@ def find_compiler(explicit=None):
     """Where the `roc` compiler is, or None if there is none."""
     return (explicit or os.environ.get("ROC_COMPILER")
             or shutil.which("roc"))
+
+
+def native_target():
+    """The Roc target name for this machine.
+
+    glibc rather than musl, because the library is dlopened into CPython.
+    """
+    machine = platform.machine().lower()
+    system = platform.system()
+    arch = "arm64" if machine in ("aarch64", "arm64") else "x64"
+    if system == "Darwin":
+        return f"{arch}mac"
+    return f"{arch}glibc"
 
 
 def artifact_for(source):
@@ -56,8 +70,11 @@ def build(source, compiler=None, timeout=300):
         return target
 
     os.makedirs(CACHE, exist_ok=True)
+    # The output is a shared library because the platform's `targets:` section
+    # says so; the flags only say where to put it and what to build it for.
+    # They take `=`, not a separate argument.
     result = subprocess.run(
-        [compiler, "build", "--output-type", "shared", "--output", target, source],
+        [compiler, "build", f"--output={target}", f"--target={native_target()}", source],
         capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0 or not os.path.exists(target):
         detail = (result.stderr or result.stdout or "").strip()

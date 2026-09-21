@@ -39,8 +39,19 @@ platform ""
     hosted {
         "roc_vd_host_exec": Host.exec!,
         "roc_vd_host_eval": Host.eval!,
+        "roc_vd_host_message": Host.message!,
         "roc_vd_host_reply": Host.reply!,
         "roc_vd_host_id": Host.id!,
+    }
+    # The compiled tier; see platform/build.sh. The interpreted tier ignores it.
+    targets: {
+        inputs_dir: "targets/",
+        x64glibc: { inputs: ["libhost.a", app], output: Shared },
+        arm64glibc: { inputs: ["libhost.a", app], output: Shared },
+        x64musl: { inputs: ["libhost.a", app], output: Shared },
+        arm64musl: { inputs: ["libhost.a", app], output: Shared },
+        x64mac: { inputs: ["libhost.a", app], output: Shared },
+        arm64mac: { inputs: ["libhost.a", app], output: Shared },
     }
 
 import Host

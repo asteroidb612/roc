@@ -13,7 +13,7 @@ Every number below is the best of 3–5 runs. Reproduce with `./run.sh`.
 | --- | --- |
 | Can a plugin be compiled in-process at startup? | Yes for one (154 ms), no for ten (~1.5 s). Compile lazily. |
 | Does the interpreted bulk path beat Python? | **No.** It is 22× slower than VisiData's own expression column and 90× slower than a list comprehension. |
-| Then where is the speed? | Only in the compiled tier. Roc owning the data is the right architecture, but interpreted it is 242× slower than VisiData's own loader, so tier 2 is a precondition rather than an optimization. |
+| Then where is the speed? | In a compiled loader, and there it is real: 1.44–1.81× faster than VisiData's own tsv loader, and 648× faster than the same loader interpreted. Tier 2 is a precondition, not an optimization. |
 
 ## 1. Compile latency
 
@@ -161,6 +161,43 @@ the screenful, the case the design is built around, costs 15 ms interpreted,
 which is felt on every keystroke. This is the third and clearest statement of
 the same finding: the compiled tier is a precondition for everything except
 commands, bindings, hooks and config — not an optimization for hot plugins.
+
+### The same loader, compiled
+
+Which then raises the only question that matters: does compiling redeem it?
+
+50,000 rows:
+
+| | VisiData's tsv loader | Roc interpreted | Roc compiled |
+| --- | --- | --- | --- |
+| parse | 541 ns/row | 242,955 ns/row | **375 ns/row** |
+| a screenful | 0.04 ms | 14.23 ms | 0.07 ms |
+| every field, as JSON | 201 ns/row | 431,177 ns/row | 2,464 ns/row |
+
+200,000 rows:
+
+| | VisiData | Roc compiled | |
+| --- | --- | --- | --- |
+| parse | 738.6 ns/row | **408.3 ns/row** | **1.81× faster** |
+| a screenful | 0.05 ms | 0.08 ms | the same, both trivial |
+| every field, as JSON | 270.9 ns/row | 2,216 ns/row | 8× slower |
+
+**Yes.** A Roc TSV loader compiled to a shared library parses **1.44× faster
+than VisiData's own at 50k rows and 1.81× faster at 200k**, and it is **648×
+faster than the same loader interpreted**. The speed claim the plan has been
+carrying since the first draft is, at last, earned — by the loader
+architecture, on the compiled tier, and by nothing else.
+
+Building it costs **2.9 s cold** for a 164 KB library, and 0.1 ms once cached
+by the hash of the source, so the second run of a plugin is native from the
+first keystroke.
+
+The one place Roc still loses is asking it for *everything* at once: the
+"whole column" row is 8× slower than VisiData because every field is encoded
+as JSON on the way out. That is a gap in the request protocol rather than in
+Roc — a typed channel for a column of numbers would avoid it, and
+`roc_vd_map_floats` already shows the shape. The screenful, which is what the
+design is actually built around, costs the same as VisiData's.
 
 ## 5. Things found along the way
 

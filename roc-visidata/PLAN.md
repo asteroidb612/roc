@@ -451,11 +451,13 @@ aggregate, select-by-expression, save — not for display.
 
 ### So where the speed actually is
 
-**Roc owning the data — but only compiled.** M4 built the loader and measured
-it (`bench/RESULTS.md` §4): interpreted, a Roc TSV loader parses 242× slower
-than VisiData's own, and even a single screenful costs 15 ms. The architecture
-is right and the interpreted tier cannot carry it. Everything below is
-therefore a statement about the compiled tier.
+**Roc owning the data — and only compiled.** M4 built the loader and measured
+it both ways (`bench/RESULTS.md` §4). Interpreted, a Roc TSV loader parses 242×
+slower than VisiData's own and a single screenful costs 15 ms. Compiled, the
+same loader parses **1.44× faster than VisiData's at 50k rows and 1.81× faster
+at 200k** — 648× faster than interpreting it. The architecture is right, the
+interpreted tier cannot carry it, and the compiled tier delivers what the plan
+has been claiming. Everything below is a statement about the compiled tier.
 
 **Roc owning the data.** A Roc loader parses a file into native columns; Roc
 operations run over those columns without ever touching a Python object; only

@@ -15,6 +15,10 @@ Host :: [].{
     ## `{"err": "<reason>"}` as JSON text.
     eval! : Str => Str
 
+    ## Show a message: `True` shows it as an error, and logs it where VisiData's
+    ## error list will find it.
+    message! : Str, Bool => {}
+
     ## Set the answer this event returns to whoever dispatched it.
     reply! : Str => {}
 

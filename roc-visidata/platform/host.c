@@ -157,6 +157,13 @@ RocStr roc_vd_host_eval(RocStr arg0) {
     return result;
 }
 
+void roc_vd_host_message(RocStr arg0, unsigned char is_error) {
+    if (current.api != NULL) {
+        current.api->message(roc_str_bytes(&arg0), roc_str_len(&arg0), is_error ? 1 : 0);
+    }
+    roc_str_decref(arg0);
+}
+
 void roc_vd_host_reply(RocStr arg0) {
     size_t len = roc_str_len(&arg0);
     char *copy = malloc(len + 1);
@@ -193,6 +200,45 @@ RocStr roc_vd_host_id(void) {
 
 #include <setjmp.h>
 
+/* ------------------------------------------------------------------------- *
+ * The runtime set every linked Roc program needs. The interpreted tier gets
+ * these from libroc_embed; a compiled plugin has to bring its own.
+ * ------------------------------------------------------------------------- */
+
+void *roc_alloc(size_t length, size_t alignment) {
+    if (length == 0) length = 1;
+    if (alignment <= 2 * sizeof(void *)) return malloc(length);
+    return aligned_alloc(alignment, (length + alignment - 1) & ~(alignment - 1));
+}
+
+void roc_dealloc(void *ptr, size_t alignment) {
+    (void)alignment;
+    free(ptr);
+}
+
+void *roc_realloc(void *ptr, size_t new_length, size_t alignment) {
+    (void)alignment;
+    return realloc(ptr, new_length == 0 ? 1 : new_length);
+}
+
+void roc_dbg(const uint8_t *bytes, size_t len) {
+    if (current.api != NULL) {
+        current.api->message((const char *)bytes, len, 0);
+    } else {
+        fwrite(bytes, 1, len, stderr);
+        fputc('\n', stderr);
+    }
+}
+
+void roc_expect_failed(const uint8_t *bytes, size_t len) {
+    if (current.api != NULL) {
+        current.api->message((const char *)bytes, len, 1);
+    } else {
+        fwrite(bytes, 1, len, stderr);
+        fputc('\n', stderr);
+    }
+}
+
 /* Provided by the Roc side of the shared library, per the platform's
  * `provides` section. */
 extern void *roc_vd_init(void);
@@ -205,18 +251,32 @@ static int compiled_model_is_live;
 static jmp_buf crash_landing;
 static int crash_guard_armed;
 
-void roc_panic(RocStr *message, unsigned int tag_id) {
-    (void)tag_id;
-    if (current.api != NULL && message != NULL) {
-        char text[512];
-        size_t len = roc_str_len(message);
+/*
+ * A crash inside a plugin must not take VisiData down with it. Report it,
+ * forget the model (it may be half-built), and return through the guard the
+ * entry points set up.
+ */
+void roc_crashed(const uint8_t *bytes, size_t len) {
+    char message[512];
+    const char *prefix = "roc-visidata: plugin crashed: ";
+    size_t prefix_len = strlen(prefix);
+    size_t copied = len < sizeof message - prefix_len - 1
+        ? len : sizeof message - prefix_len - 1;
 
-        if (len > sizeof text - 1) len = sizeof text - 1;
-        memcpy(text, roc_str_bytes(message), len);
-        text[len] = '\0';
-        current.api->message(text, strlen(text), 1);
+    memcpy(message, prefix, prefix_len);
+    memcpy(message + prefix_len, bytes, copied);
+    message[prefix_len + copied] = '\0';
+    if (current.api != NULL) {
+        current.api->message(message, strlen(message), 1);
+    } else {
+        fprintf(stderr, "%s\n", message);
     }
-    if (crash_guard_armed) longjmp(crash_landing, 1);
+
+    compiled_model_is_live = 0;
+    if (crash_guard_armed) {
+        crash_guard_armed = 0;
+        longjmp(crash_landing, 1);
+    }
     abort();
 }
 
