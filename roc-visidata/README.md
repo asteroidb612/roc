@@ -156,6 +156,18 @@ A loader is where the speed is, so it gets the most care:
   JSON document: 41.6 ns/row against VisiData's 222.
 - Everything else is fetched a **block of rows at a time** (256), so scrolling
   costs one request rather than fifty.
+- A loader can **claim a file extension**, so opening a file just works:
+
+  ```roc
+  VisiData.register_loader!("rtsv", "tsv_loader.roc")
+  ```
+
+  in `~/.visidatarc.roc`, and `vd sales.rtsv` goes through Roc. Otherwise
+  `roc-open` asks for a loader and a file.
+
+Failures stay failures rather than becoming crashes: a missing file, an empty
+one, and a plugin handed over where a loader was expected each say what
+happened and leave VisiData running.
 
 ## Speed, honestly
 

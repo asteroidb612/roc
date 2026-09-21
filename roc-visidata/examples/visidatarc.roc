@@ -16,6 +16,11 @@ main! = || {
     # Keys, the way `bindkey` does.
     VisiData.bind_key!("gw", "sysopen-row")
 
+    # Open .rtsv files with the Roc loader instead of VisiData's own, so the
+    # table stays on the Roc side. The path is resolved from the plugin
+    # directory when it is not absolute.
+    VisiData.register_loader!("rtsv", "tsv_loader.roc")
+
     VisiData.status!("visidatarc.roc loaded")
     Ok({})
 }

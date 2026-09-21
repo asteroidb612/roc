@@ -82,7 +82,7 @@ handle_for_host! = |boxed, request_json| {
                 Box.box(Ready(table))
             }
             Err(err) => {
-                Host.reply!(error_json(Str.inspect(err)))
+                Host.reply!(error_json(reason_of(err)))
                 Box.box(Empty)
             }
         }
@@ -157,6 +157,14 @@ rows_json = |table, from, to| {
     }
     "{\"ok\":true,\"rows\":${Value.to_str(Value.Array($rows))}}"
 }
+
+## What a plugin's error actually said, rather than how it is spelled.
+reason_of : [VdErr(Str), ..] -> Str
+reason_of = |err|
+    match err {
+        VdErr(text) => text
+        other => Str.inspect(other)
+    }
 
 error_json : Str -> Str
 error_json = |reason|

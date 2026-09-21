@@ -100,6 +100,46 @@ def main():
         check(name.getValue(a.rows[-1]) == f"row{rows - 1}",
               "and from the last, which needs another block")
 
+        # A loader can claim a file extension, so `vd file.rtsv` just works.
+        from visidata import Path
+        from visidata_roc.bridge import _roc_register_loader
+
+        _roc_register_loader("rtsv", os.path.abspath(LOADER))
+        claimed = os.path.join(work, "third.rtsv")
+        write_tsv(claimed, rows // 4)
+        by_extension = vd.openSource(Path(claimed))
+        check(type(by_extension).__name__ == "RocSheet",
+              "openSource routes a claimed extension to the Roc loader")
+        vd.sheets = [by_extension]
+        by_extension.reload()
+        settled(by_extension)
+        check(len(by_extension.rows) == rows // 4,
+              f"and it read the file ({len(by_extension.rows)} rows)")
+
+        # Failing well matters as much as working.
+        missing = vd.rocOpen(LOADER, os.path.join(work, "not-here.tsv"))
+        missing.reload()
+        time.sleep(3)
+        said = " ".join(str(s) for s in vd.statuses)
+        check(len(missing.rows) == 0 and "No such file" in said,
+              "a missing file is reported, not crashed on")
+
+        empty_path = os.path.join(work, "empty.tsv")
+        open(empty_path, "w").close()
+        empty = vd.rocOpen(LOADER, empty_path)
+        empty.reload()
+        time.sleep(3)
+        check(len(empty.rows) == 0 and not empty.columns,
+              "an empty file is an empty sheet, with no phantom column")
+
+        not_a_loader = vd.rocOpen(
+            os.path.join(HERE, "..", "examples", "hello.roc"), first)
+        not_a_loader.reload()
+        time.sleep(3)
+        said = " ".join(str(s) for s in vd.statuses)
+        check("is not a loader" in said,
+              "a plugin used as a loader says so")
+
         vd.rocUnloadAll()
         print("\nloader_test: all checks passed")
         return 0

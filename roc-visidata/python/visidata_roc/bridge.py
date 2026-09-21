@@ -10,7 +10,7 @@ import datetime
 import json
 import os
 
-from visidata import vd
+from visidata import VisiData, vd
 
 
 class VisiDataBridge:
@@ -112,6 +112,35 @@ def _roc_subscribe(plugin_id, hooks):
     return list(hooks)
 
 
+def _roc_register_loader(extension, loader_path):
+    """Open files with this extension through a Roc loader.
+
+    VisiData dispatches on filetype by looking for `vd.open_<ext>`, so this
+    defines one. A relative loader path is resolved against the plugin
+    directory, which is where a person's loaders live.
+    """
+    import os
+
+    if not os.path.isabs(os.path.expanduser(loader_path)):
+        loader_path = os.path.join(
+            os.path.expanduser(vd.options.roc_plugin_dir), loader_path)
+    loader_path = os.path.abspath(os.path.expanduser(loader_path))
+
+    if not os.path.exists(loader_path):
+        vd.warning(f"roc: no loader at {loader_path}")
+        return None
+
+    def opener(p, _loader=loader_path):
+        from .loader import RocSheet
+
+        return RocSheet(p.base_stem, loader_path=_loader, source=p)
+
+    opener.__name__ = f"open_{extension}"
+    setattr(VisiData, f"open_{extension}", lambda vd_, p: opener(p))
+    vd.debug(f"roc: .{extension} files will open with {os.path.basename(loader_path)}")
+    return extension
+
+
 def _roc_option(name, default, description):
     vd.option(name, default, description)
     return name
@@ -184,6 +213,7 @@ HELPERS = {
     "_roc_bind_key": _roc_bind_key,
     "_roc_subscribe": _roc_subscribe,
     "_roc_option": _roc_option,
+    "_roc_register_loader": _roc_register_loader,
     "_roc_set_option": _roc_set_option,
     "_roc_column": _roc_column,
     "_roc_set_cell": _roc_set_cell,

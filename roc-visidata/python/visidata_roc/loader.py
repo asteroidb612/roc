@@ -70,8 +70,15 @@ class RocSheet(Sheet):
 
     def ask(self, **request):
         answer = self.plugin.event("loader", request)
+        if answer is None:
+            # A plugin that is not a loader answers nothing at all, which is
+            # worth saying plainly rather than reporting as a failed request.
+            vd.warning(f"roc: {self.plugin.name} is not a loader "
+                       f"(its app header should use platform/loader.roc)")
+            return None
         if not isinstance(answer, dict) or not answer.get("ok"):
-            reason = (answer or {}).get("err", "the loader did not answer")
+            reason = answer.get("err", "the request failed") \
+                if isinstance(answer, dict) else str(answer)
             vd.warning(f"roc: {self.plugin.name}: {reason}")
             return None
         return answer

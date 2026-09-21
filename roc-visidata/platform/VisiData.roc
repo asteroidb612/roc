@@ -145,6 +145,23 @@ VisiData := [].{
         {}
     }
 
+    ## Have VisiData open files with this extension using a Roc loader.
+    ##
+    ## `vd sales.tsv` then goes through the loader rather than VisiData's own,
+    ## with the table staying on the Roc side. The path is to the loader's
+    ## `.roc` file, resolved from the plugin directory if it is not absolute.
+    ## ```
+    ## VisiData.register_loader!("tsv", "tsv_loader.roc")
+    ## ```
+    register_loader! : Str, Str => {}
+    register_loader! = |extension, loader_path| {
+        _ = call!("_roc_register_loader", [
+            Value.Text(extension),
+            Value.Text(loader_path),
+        ])
+        {}
+    }
+
     ## Declare an option, the way `vd.option()` does.
     declare_option! : Str, Value, Str => {}
     declare_option! = |name, default, description| {

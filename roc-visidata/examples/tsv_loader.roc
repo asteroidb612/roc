@@ -22,6 +22,9 @@ loader = { load!, columns, nrows, cell, col_f64 }
 load! : Str => Try(Table, _)
 load! = |path| {
     text = VisiData.eval_str!("_roc_read_file(${VisiData.quote(path)})")?
+    if text == "" {
+        Ok({ header: [], rows: [] })
+    } else {
     lines = Str.split_on(text, "\n")
 
     match lines {
@@ -36,6 +39,7 @@ load! = |path| {
             }
             Ok({ header: header, rows: $rows })
         }
+    }
     }
 }
 
