@@ -8,6 +8,7 @@ so `eval!` can see them.
 
 import datetime
 import json
+import os
 
 from visidata import vd
 
@@ -63,6 +64,17 @@ def jsonable(value):
 def _roc_json(text):
     """Decode the JSON argument list `VisiData.call!` sends."""
     return json.loads(text)
+
+
+def _roc_read_file(path):
+    """Read a file for a Roc loader.
+
+    Roc has no file access of its own here — the platform's effects are
+    VisiData's, not the operating system's — so a loader asks for the bytes and
+    parses them itself.
+    """
+    with open(os.path.expanduser(path), encoding="utf-8", errors="replace") as f:
+        return f.read()
 
 
 def _roc_add_command(plugin_id, keystrokes, longname, help_text):
@@ -155,6 +167,7 @@ def _roc_push_sheet(name, rows):
 #: Everything above that Roc is allowed to reach by name.
 HELPERS = {
     "_roc_json": _roc_json,
+    "_roc_read_file": _roc_read_file,
     "_roc_add_command": _roc_add_command,
     "_roc_bind_key": _roc_bind_key,
     "_roc_subscribe": _roc_subscribe,

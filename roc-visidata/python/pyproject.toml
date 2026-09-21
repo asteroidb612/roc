@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roc-visidata"
+version = "0.1.0"
+description = "Write VisiData plugins in Roc, with no build step"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "UPL-1.0" }
+dependencies = ["visidata>=3.0"]
+keywords = ["visidata", "roc", "plugin"]
+
+[project.urls]
+Source = "https://github.com/asteroidb612/roc/tree/main/roc-visidata"
+
+[tool.setuptools]
+packages = ["visidata_roc"]
+
+[tool.setuptools.package-data]
+# The engine ships beside the package: the Roc compiler, the engine and the
+# host in one file. Built by roc-visidata/engine/build.sh.
+visidata_roc = ["libroc_vd_engine.so", "libroc_vd_engine.dylib"]

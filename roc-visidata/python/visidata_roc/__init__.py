@@ -16,6 +16,7 @@ from ._ffi import Engine, EngineError, find_library          # noqa: F401
 from .engine import RocPlugin                                # noqa: F401
 from . import manager                                        # noqa: F401
 from . import columns                                        # noqa: F401
+from . import loader                                         # noqa: F401
 from .config import loadRocConfig                            # noqa: F401
 
 __version__ = "0.1.0"
@@ -43,6 +44,10 @@ BaseSheet.addCommand(None, "roc-reload-all",
 BaseSheet.addCommand(None, "roc-addcol",
                      "vd.rocAddColumn(vd.input('roc column plugin: ', type='file'))",
                      "add a column computed by a Roc column plugin")
+BaseSheet.addCommand(None, "roc-open",
+                     "vd.rocOpen(vd.input('roc loader: ', type='file'), "
+                     "vd.input('file to open: ', type='file'))",
+                     "open a file with a Roc loader, which keeps the data on the Roc side")
 BaseSheet.addCommand(None, "roc-status", "vd.status(vd.rocStatus())",
                      "say what Roc has loaded")
 
