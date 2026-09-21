@@ -130,6 +130,9 @@ class CompiledPlugin:
         lib.roc_vd_plugin_event.restype = p
         lib.roc_vd_plugin_free.argtypes = [p]
         lib.roc_vd_plugin_unload.argtypes = [p]
+        lib.roc_vd_take_floats.argtypes = [ctypes.POINTER(s)]
+        lib.roc_vd_take_floats.restype = p
+        lib.roc_vd_free_floats.argtypes = [ctypes.POINTER(ctypes.c_double)]
 
     # The guard is the same as the interpreted plugin's, for the same reason:
     # VisiData dispatches on background threads, and re-entry would deadlock.
@@ -156,6 +159,17 @@ class CompiledPlugin:
             return json.loads(raw.decode("utf-8"))
         except ValueError:
             return raw.decode("utf-8", "replace")
+
+    def take_floats(self):
+        """The numbers the last event answered with, or None."""
+        out_len = ctypes.c_size_t(0)
+        address = self.lib.roc_vd_take_floats(ctypes.byref(out_len))
+        if not address:
+            return None
+        buffer = ctypes.cast(address, ctypes.POINTER(ctypes.c_double))
+        values = buffer[:out_len.value]
+        self.lib.roc_vd_free_floats(buffer)
+        return values
 
     @property
     def kind_name(self):

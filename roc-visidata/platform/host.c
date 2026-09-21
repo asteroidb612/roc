@@ -99,6 +99,8 @@ typedef struct {
     char id[24];
     char *reply;
     size_t reply_len;
+    double *floats;          /* what reply_floats! left, if anything */
+    size_t floats_len;
 } roc_vd_current_T;
 
 static __thread roc_vd_current_T current;
@@ -113,6 +115,20 @@ static void roc_vd_clear_reply(void) {
     free(current.reply);
     current.reply = NULL;
     current.reply_len = 0;
+    free(current.floats);
+    current.floats = NULL;
+    current.floats_len = 0;
+}
+
+/* Roc hands ownership of a refcounted argument to the hosted function. */
+static void roc_list_decref(RocList list) {
+    intptr_t *refcount;
+
+    if (list.elements == NULL) return;
+    refcount = ((intptr_t *)list.elements) - 1;
+    if (*refcount == INTPTR_MIN) return;    /* static data */
+    *refcount -= 1;
+    if (*refcount == 0) free(list.elements - sizeof(size_t));
 }
 
 /* Hand the pending reply to the caller, who now owns it. */
@@ -171,11 +187,46 @@ void roc_vd_host_reply(RocStr arg0) {
     if (copy != NULL) {
         memcpy(copy, roc_str_bytes(&arg0), len);
         copy[len] = '\0';
-        roc_vd_clear_reply();
+        /* Replace the text answer only. An event that answers with numbers
+         * sends them through reply_floats! and then says so in the text, so
+         * clearing everything here would throw the numbers away. */
+        free(current.reply);
         current.reply = copy;
         current.reply_len = len;
     }
     roc_str_decref(arg0);
+}
+
+void roc_vd_host_reply_floats(RocList values) {
+    size_t bytes = values.length * sizeof(double);
+    double *copy = malloc(bytes == 0 ? sizeof(double) : bytes);
+
+    if (copy != NULL) {
+        if (bytes > 0) memcpy(copy, values.elements, bytes);
+        free(current.floats);
+        current.floats = copy;
+        current.floats_len = values.length;
+    }
+    roc_list_decref(values);
+}
+
+/*
+ * Take the numbers the last event answered with, if it answered with numbers.
+ * The caller owns what comes back and frees it with roc_vd_free_floats.
+ * Exported from the engine and from every compiled plugin, because both run
+ * the same hosted functions.
+ */
+double *roc_vd_take_floats(size_t *out_len) {
+    double *values = current.floats;
+
+    if (out_len != NULL) *out_len = current.floats_len;
+    current.floats = NULL;
+    current.floats_len = 0;
+    return values;
+}
+
+void roc_vd_free_floats(double *values) {
+    free(values);
 }
 
 RocStr roc_vd_host_id(void) {

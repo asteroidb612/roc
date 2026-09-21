@@ -19,5 +19,8 @@ echo
 echo "== the compiled tier =="
 python3 "$here/tier2_test.py"
 echo
+echo "== Roc loaders =="
+python3 "$here/loader_test.py"
+echo
 echo "== the real vd, in a pty =="
 python3 "$here/vd_pty_test.py"

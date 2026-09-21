@@ -22,6 +22,14 @@ Host :: [].{
     ## Set the answer this event returns to whoever dispatched it.
     reply! : Str => {}
 
+    ## Answer with a column of numbers, as numbers.
+    ##
+    ## `reply!` has to encode its answer as JSON, and for a whole column that
+    ## encoding costs more than everything else put together
+    ## (`bench/RESULTS.md` §4). This hands the host the bytes of the list
+    ## instead, which is a memcpy on both sides.
+    reply_floats! : List(F64) => {}
+
     ## The handle VisiData loaded this plugin under.
     id! : () => Str
 }

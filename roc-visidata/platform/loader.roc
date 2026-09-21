@@ -14,6 +14,7 @@
 ##   {"q":"columns"}             -> {"ok":true,"columns":[...]}
 ##   {"q":"cell","row":R,"col":C} -> {"ok":true,"cell":"..."}
 ##   {"q":"rows","from":A,"to":B} -> {"ok":true,"rows":[[...],...]}
+##   {"q":"col_f64","col":C}     -> the column's numbers, through reply_floats!
 ##
 ## It reuses the plugin entrypoints, so the engine needs to know nothing about
 ## loaders: the table is the model the host holds between calls.
@@ -28,6 +29,10 @@ platform ""
             nrows : table -> I64,
             ## One cell as text, by row and column index, both counting from 0.
             cell : table, I64, I64 -> Str,
+            ## One whole column as numbers, for sorting and aggregating.
+            ## Anything that is not a number should come back as NaN, so the
+            ## list still lines up with the rows.
+            col_f64 : table, I64 -> List(F64),
         }
     }
     exposes [VisiData, Value]
@@ -41,6 +46,7 @@ platform ""
         "roc_vd_host_eval": Host.eval!,
         "roc_vd_host_message": Host.message!,
         "roc_vd_host_reply": Host.reply!,
+        "roc_vd_host_reply_floats": Host.reply_floats!,
         "roc_vd_host_id": Host.id!,
     }
     # The compiled tier; see platform/build.sh. The interpreted tier ignores it.
@@ -97,6 +103,12 @@ handle_for_host! = |boxed, request_json| {
                         "{\"ok\":true,\"cell\":${Value.to_str(Value.Text(text))}}"
                     } else if request.q == "rows" {
                         rows_json(table, request.from, request.to)
+                    } else if request.q == "col_f64" {
+                        # Answered out of band: the numbers go back as bytes
+                        # rather than as JSON, which for a whole column is
+                        # most of the cost.
+                        Host.reply_floats!((loader.col_f64)(table, request.col))
+                        "{\"ok\":true,\"floats\":true}"
                     } else {
                         error_json("unknown request ${request.q}")
                     }

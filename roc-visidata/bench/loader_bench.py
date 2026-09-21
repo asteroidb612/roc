@@ -82,8 +82,22 @@ def main():
     timed("whole column",
           lambda: [amount.getValue(r) for r in sheet.rows], N)
 
-    # ---- the Roc loader -------------------------------------------------
-    print("\nRoc loader (the table stays in Roc):")
+    # ---- the Roc loader, interpreted ------------------------------------
+    # Interpreted parsing is ~240 us/row, so a full-size run here would take
+    # minutes and say nothing a smaller one does not. It is linear (see
+    # RESULTS.md §4), so measure it on a slice and report ns/row.
+    interp_n = min(N, 20_000)
+    interp_path = PATH
+    if interp_n != N:
+        interp_path = f"/tmp/roc_loader_bench_interp_{interp_n}.tsv"
+        if not os.path.exists(interp_path):
+            with open(PATH) as src, open(interp_path, "w") as dst:
+                for i, line in enumerate(src):
+                    if i > interp_n:
+                        break
+                    dst.write(line)
+
+    print(f"\nRoc loader, interpreted ({interp_n} rows; it is linear):")
     # Measure the interpreted tier as itself: with a compiler on PATH the
     # manager would upgrade this plugin to native in the background and swap
     # it out mid-benchmark.
@@ -93,16 +107,15 @@ def main():
         print("  could not load tsv_loader.roc", file=sys.stderr)
         return 1
 
-    answer, _ = timed("parse", lambda: plugin.event("loader", {"q": "load", "path": PATH}), N)
+    answer, _ = timed("parse",
+                      lambda: plugin.event("loader", {"q": "load", "path": interp_path}),
+                      interp_n, iters=1)
     if not answer or not answer.get("ok"):
         print(f"  loader failed: {answer}", file=sys.stderr)
         return 1
-    print(f"    (loaded {answer['nrows']} rows, columns {answer['columns']})")
 
     timed("screenful (50 rows x 3 cols)",
-          lambda: plugin.event("loader", {"q": "rows", "from": 0, "to": 50}))
-    timed("whole column",
-          lambda: plugin.event("loader", {"q": "rows", "from": 0, "to": N}), N, iters=1)
+          lambda: plugin.event("loader", {"q": "rows", "from": 0, "to": 50}), iters=1)
 
     # ---- the same loader, compiled --------------------------------------
     from visidata_roc.tier2 import CompiledPlugin, build, find_compiler
@@ -111,7 +124,7 @@ def main():
         print("\nNo roc compiler on PATH, so the compiled tier is not measured.")
         return 0
 
-    print("\nRoc loader, compiled:")
+    print(f"\nRoc loader, compiled ({N} rows):")
     source = os.path.join(HERE, "..", "examples", "tsv_loader.roc")
     t0 = time.perf_counter()
     library = build(source)
@@ -126,13 +139,20 @@ def main():
 
     timed("screenful (50 rows x 3 cols)",
           lambda: compiled.event("loader", {"q": "rows", "from": 0, "to": 50}))
-    timed("whole column",
+    timed("whole column, as JSON",
           lambda: compiled.event("loader", {"q": "rows", "from": 0, "to": N}), N, iters=1)
 
-    print("\nNote: the 'whole column' request returns every field of every row "
-          "as JSON,\nwhich is the honest cost of asking Roc for everything at "
-          "once today.\nThe screenful is the case the design is actually built "
-          "around.")
+    def typed_column():
+        compiled.event("loader", {"q": "col_f64", "col": 1})
+        return compiled.take_floats()
+
+    values, _ = timed("whole column, typed", typed_column, N)
+    print(f"    ({len(values)} numbers, first {values[:3]})")
+
+    print("\nThe JSON row is every field of every row encoded as text, which is "
+          "what\nasking Roc for everything at once used to cost. The typed row "
+          "is the same\ncolumn through reply_floats!, which hands the numbers "
+          "over as bytes.")
     return 0
 
 

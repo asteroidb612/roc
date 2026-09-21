@@ -49,6 +49,7 @@ static void *resolve_hosted(void *ctx, const char *symbol, size_t len) {
     if (symbol_is(symbol, len, "roc_vd_host_eval")) return (void *)roc_vd_host_eval;
     if (symbol_is(symbol, len, "roc_vd_host_message")) return (void *)roc_vd_host_message;
     if (symbol_is(symbol, len, "roc_vd_host_reply")) return (void *)roc_vd_host_reply;
+    if (symbol_is(symbol, len, "roc_vd_host_reply_floats")) return (void *)roc_vd_host_reply_floats;
     if (symbol_is(symbol, len, "roc_vd_host_id")) return (void *)roc_vd_host_id;
     return NULL;
 }
@@ -274,10 +275,6 @@ int roc_vd_map_floats(void *handle, const roc_vd_api_T *api,
      * Roc already consumed, so releasing it again would be a double free. */
     if (result.elements != in.elements) roc_list_release(result);
     return copy == NULL ? 1 : 0;
-}
-
-void roc_vd_free_floats(double *values) {
-    free(values);
 }
 
 void roc_vd_free(char *ptr) {

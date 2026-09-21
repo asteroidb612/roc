@@ -116,7 +116,7 @@ Four kinds of file, told apart by the platform in the app header:
 | `platform/main.roc` | a plugin | `init!`, `handle!` |
 | `platform/config.roc` | `~/.visidatarc.roc` | `main!` |
 | `platform/column.roc` | a computed column | `map_floats`, `map_strs` |
-| `platform/loader.roc` | a loader that keeps the data in Roc | `load!`, `columns`, `nrows`, `cell` |
+| `platform/loader.roc` | a loader that keeps the data in Roc | `load!`, `columns`, `nrows`, `cell`, `col_f64` |
 
 `VisiData.roc` has the API: `status!`, `add_command!`, `bind_key!`,
 `subscribe!`, `set_option!`, `sheet_name!`, `nrows!`, `column!`,
@@ -141,6 +141,22 @@ does the arithmetic in Roc, selects rows), `zscore.roc` (a computed column), and
 Options: `roc_plugin_dir` (default `~/.visidata/roc`), `roc_engine`,
 `roc_autoload`, `roc_reload_on_save`.
 
+## Loaders
+
+A loader is where the speed is, so it gets the most care:
+
+- Each sheet gets **its own loader instance**, because a loader's state is the
+  table it parsed. Two sheets over one loader would otherwise show one file.
+- Loaders are **compiled up front** rather than upgraded in the background,
+  because a replacement plugin has never read the file — and because
+  interpreted parsing is ~240 µs/row against 0.4 µs compiled, so the build is
+  the fast path, not a delay. It is cached after the first time.
+- A column that looks numeric is fetched **as numbers**, through
+  `col_f64` and `Host.reply_floats!`, which hands the bytes over rather than a
+  JSON document: 41.6 ns/row against VisiData's 222.
+- Everything else is fetched a **block of rows at a time** (256), so scrolling
+  costs one request rather than fifty.
+
 ## Speed, honestly
 
 [`bench/RESULTS.md`](bench/RESULTS.md) has the measurements. The short version:
@@ -156,9 +172,10 @@ Options: `roc_plugin_dir` (default `~/.visidata/roc`), `roc_engine`,
   about 1.7× there.
 - So the speed case belongs with **Roc owning the data** — a loader whose
   columns never cross per row — rather than with Roc expression columns over
-  Python rows. Compiled, that pays: a Roc TSV loader parses **1.44× faster
-  than VisiData's own at 50k rows and 1.81× faster at 200k**, and 648× faster
-  than the same loader interpreted.
+  Python rows. Compiled, that pays: a Roc TSV loader **parses 1.4–2.1× faster
+  than VisiData's own**, reads a whole numeric column **5.3× faster** (1.76×
+  through VisiData's own per-row `getValue`), and runs ~650× faster than the
+  same loader interpreted.
 
 Startup: 15.7 ms to compile a plugin that imports nothing, ~154 ms for a real
 one. Plugins are compiled when first needed rather than all at startup, because

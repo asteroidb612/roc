@@ -151,6 +151,22 @@ class RocPlugin:
         self.engine.lib.roc_vd_free_floats(out)
         return result
 
+    def take_floats(self):
+        """The numbers the last event answered with, or None.
+
+        A loader answering `col_f64` sends its column through this rather than
+        through JSON: the bytes are memcpy'd out of Roc and read straight into
+        Python, which is most of the cost of a whole column removed.
+        """
+        out_len = ctypes.c_size_t(0)
+        address = self.engine.lib.roc_vd_take_floats(ctypes.byref(out_len))
+        if not address:
+            return None
+        buffer = ctypes.cast(address, ctypes.POINTER(ctypes.c_double))
+        values = buffer[:out_len.value]
+        self.engine.lib.roc_vd_free_floats(buffer)
+        return values
+
     # -- lifecycle ------------------------------------------------------------
 
     @property

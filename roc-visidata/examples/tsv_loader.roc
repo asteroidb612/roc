@@ -17,7 +17,7 @@ Table : {
     rows : List(List(Str)),
 }
 
-loader = { load!, columns, nrows, cell }
+loader = { load!, columns, nrows, cell, col_f64 }
 
 load! : Str => Try(Table, _)
 load! = |path| {
@@ -64,4 +64,22 @@ cell = |table, row, column|
                 Err(_) => ""
             }
         _ => ""
+    }
+
+## One column as numbers. Anything unparseable becomes NaN so the list still
+## lines up with the rows — dropping them would misalign every row after.
+col_f64 : Table, I64 -> List(F64)
+col_f64 = |table, column|
+    match column.to_u64_try() {
+        Ok(c) =>
+            List.map(table.rows, |fields|
+                match List.get(fields, c) {
+                    Ok(text) =>
+                        match F64.from_str(text) {
+                            Ok(number) => number
+                            Err(_) => F64.nan
+                        }
+                    Err(_) => F64.nan
+                })
+        Err(_) => []
     }

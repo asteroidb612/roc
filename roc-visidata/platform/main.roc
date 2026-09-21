@@ -28,6 +28,7 @@ platform ""
         "roc_vd_host_eval": Host.eval!,
         "roc_vd_host_message": Host.message!,
         "roc_vd_host_reply": Host.reply!,
+        "roc_vd_host_reply_floats": Host.reply_floats!,
         "roc_vd_host_id": Host.id!,
     }
     # The compiled tier: a plugin built for it is a shared library VisiData

@@ -13,7 +13,7 @@ Every number below is the best of 3–5 runs. Reproduce with `./run.sh`.
 | --- | --- |
 | Can a plugin be compiled in-process at startup? | Yes for one (154 ms), no for ten (~1.5 s). Compile lazily. |
 | Does the interpreted bulk path beat Python? | **No.** It is 22× slower than VisiData's own expression column and 90× slower than a list comprehension. |
-| Then where is the speed? | In a compiled loader, and there it is real: 1.44–1.81× faster than VisiData's own tsv loader, and 648× faster than the same loader interpreted. Tier 2 is a precondition, not an optimization. |
+| Then where is the speed? | In a compiled loader, and there it is real: it parses 1.4–2.1× faster than VisiData's own tsv loader, reads a numeric column 5.3× faster, and runs ~650× faster than the same loader interpreted. Tier 2 is a precondition, not an optimization. |
 
 ## 1. Compile latency
 
@@ -192,12 +192,36 @@ Building it costs **2.9 s cold** for a 164 KB library, and 0.1 ms once cached
 by the hash of the source, so the second run of a plugin is native from the
 first keystroke.
 
-The one place Roc still loses is asking it for *everything* at once: the
-"whole column" row is 8× slower than VisiData because every field is encoded
-as JSON on the way out. That is a gap in the request protocol rather than in
-Roc — a typed channel for a column of numbers would avoid it, and
-`roc_vd_map_floats` already shows the shape. The screenful, which is what the
-design is actually built around, costs the same as VisiData's.
+### Closing the last gap: numbers as numbers
+
+Asking Roc for a whole column used to be the one place it lost, by 8×, and the
+reason was worth measuring rather than guessing. Splitting the cost of a
+200,000-row request showed it was not the boundary and not Python:
+
+| | ns/row |
+| --- | --- |
+| Roc encoding the answer as JSON | 994 |
+| Python decoding it | 442 |
+
+So the encoding was most of it. `Host.reply_floats!` skips it: a column of
+numbers is handed over as the bytes of the list and read straight into Python,
+a memcpy on each side rather than a JSON document. A loader answers
+`{"q":"col_f64","col":N}` through it.
+
+| whole numeric column, 200k rows | ns/row | |
+| --- | --- | --- |
+| Roc, every field as JSON (before) | 2,053–3,651 | |
+| VisiData reading its own rows | 222 | |
+| Roc, typed | **41.6** | **5.3× faster than VisiData** |
+
+Through VisiData's own `Column.getValue`, which a sort or an aggregate goes
+through per row, the win is smaller but still real: **194 ns/row against
+VisiData's 341, or 1.76×**. The ~150 ns/row difference between 41.6 and 194 is
+`getValue` itself, and no loader can do anything about it — it is the same
+per-row Python floor §3 measured from the other side.
+
+The screenful, which is what the design is actually built around, costs the
+same as VisiData's (0.08 ms against 0.04 ms, both negligible).
 
 ## 5. Things found along the way
 

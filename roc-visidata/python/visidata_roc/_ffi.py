@@ -134,6 +134,8 @@ class Engine:
             ctypes.POINTER(s), ctypes.POINTER(p)]
         lib.roc_vd_map_floats.restype = i
         lib.roc_vd_free_floats.argtypes = [ctypes.POINTER(ctypes.c_double)]
+        lib.roc_vd_take_floats.argtypes = [ctypes.POINTER(s)]
+        lib.roc_vd_take_floats.restype = p
         lib.roc_vd_free.argtypes = [p]
         lib.roc_vd_free_error.argtypes = [p]
         lib.roc_vd_unload.argtypes = [p]
