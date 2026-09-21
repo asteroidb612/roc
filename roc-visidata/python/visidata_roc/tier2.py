@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import threading
 
-from ._ffi import EngineError
+from ._ffi import PLUGIN_ABI_VERSION, EngineError
 
 CACHE = os.path.expanduser("~/.cache/roc-visidata")
 
@@ -107,20 +107,29 @@ class CompiledPlugin:
         self._declare()
 
         abi = self.lib.roc_vd_plugin_abi_version()
-        if abi != 1:
-            raise EngineError(f"{self.name} was built for ABI {abi}")
-        if not self.lib.roc_vd_plugin_init(engine.api_ref, handle):
+        if abi != PLUGIN_ABI_VERSION:
+            raise EngineError(
+                f"{self.name} was built for plugin ABI {abi}, and this "
+                f"visidata_roc speaks {PLUGIN_ABI_VERSION}; rebuild it")
+
+        # One instance per caller: dlopening the same library twice gives the
+        # same code, so the plugin's state has to be here rather than in it.
+        # A loader's state is the table it parsed, so sharing would mean two
+        # sheets showing one file.
+        self.instance = self.lib.roc_vd_plugin_new(engine.api_ref, handle)
+        if not self.instance:
             raise EngineError(f"{self.name} failed to start")
 
     def _declare(self):
         lib, p, i, s, c = (self.lib, ctypes.c_void_p, ctypes.c_int,
                            ctypes.c_size_t, ctypes.c_char_p)
         lib.roc_vd_plugin_abi_version.restype = i
-        lib.roc_vd_plugin_init.argtypes = [p, i]
-        lib.roc_vd_plugin_init.restype = i
-        lib.roc_vd_plugin_event.argtypes = [p, i, c, s, ctypes.POINTER(s)]
+        lib.roc_vd_plugin_new.argtypes = [p, i]
+        lib.roc_vd_plugin_new.restype = p
+        lib.roc_vd_plugin_event.argtypes = [p, p, c, s, ctypes.POINTER(s)]
         lib.roc_vd_plugin_event.restype = p
         lib.roc_vd_plugin_free.argtypes = [p]
+        lib.roc_vd_plugin_unload.argtypes = [p]
 
     # The guard is the same as the interpreted plugin's, for the same reason:
     # VisiData dispatches on background threads, and re-entry would deadlock.
@@ -136,7 +145,7 @@ class CompiledPlugin:
         with self.entered():
             self.events += 1
             address = self.lib.roc_vd_plugin_event(
-                self.engine.api_ref, self.handle, encoded, len(encoded),
+                self.instance, self.engine.api_ref, encoded, len(encoded),
                 ctypes.byref(out_len))
 
         if not address:
@@ -160,10 +169,12 @@ class CompiledPlugin:
             return False
 
     def unload(self):
-        try:
-            self.lib.roc_vd_plugin_deinit()
-        except Exception:
-            pass
+        if getattr(self, "instance", None):
+            try:
+                self.lib.roc_vd_plugin_unload(self.instance)
+            except Exception:
+                pass
+            self.instance = None
 
     def __repr__(self):
         return f"<CompiledPlugin {self.name} handle={self.handle}>"

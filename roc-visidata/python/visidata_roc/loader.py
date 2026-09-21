@@ -26,8 +26,9 @@ class RocSheet(Sheet):
 
     rowtype = "rows"  # rowdef: int, the row's index on the Roc side
 
-    def __init__(self, name, plugin=None, source=None, **kwargs):
+    def __init__(self, name, loader_path=None, plugin=None, source=None, **kwargs):
         super().__init__(name, source=source, **kwargs)
+        self.loader_path = loader_path
         self.plugin = plugin
         self._blocks = {}          # block index -> list of rows (list of str)
         self._ncols = 0
@@ -41,6 +42,11 @@ class RocSheet(Sheet):
         return answer
 
     def iterload(self):
+        # Made here, on VisiData's loader thread, so compiling shows up as the
+        # sheet taking a moment to open rather than as the UI locking up.
+        if self.plugin is None:
+            self.plugin = vd.rocInstance(self.loader_path)
+
         answer = self.ask(q="load", path=str(self.source))
         if answer is None:
             return
@@ -77,11 +83,7 @@ class RocSheet(Sheet):
 @VisiData.api
 def rocOpen(vd, loader_path, source):
     """Open `source` with the Roc loader at `loader_path`."""
-    plugin = vd.rocLoad(loader_path)
-    if plugin is None:
-        return None
-
     name = os.path.basename(str(source))
-    sheet = RocSheet(name, plugin=plugin, source=source)
+    sheet = RocSheet(name, loader_path=loader_path, source=source)
     vd.push(sheet)
     return sheet

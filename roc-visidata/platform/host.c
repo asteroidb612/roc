@@ -244,12 +244,22 @@ void roc_expect_failed(const uint8_t *bytes, size_t len) {
 extern void *roc_vd_init(void);
 extern void *roc_vd_handle(void *model, RocStr event);
 
-static void *compiled_model;
-static int compiled_model_is_live;
+/*
+ * One loaded plugin. Two sheets opened with the same loader dlopen the same
+ * library and get the same code, so everything that is per-plugin — the model,
+ * which for a loader is the whole parsed table — lives here rather than at file
+ * scope.
+ */
+typedef struct {
+    void *model;
+    int model_is_live;
+    int handle;
+} roc_vd_instance_T;
 
 /* A Roc crash lands here rather than taking VisiData with it. */
-static jmp_buf crash_landing;
-static int crash_guard_armed;
+static __thread jmp_buf crash_landing;
+static __thread int crash_guard_armed;
+static __thread roc_vd_instance_T *crashing;
 
 /*
  * A crash inside a plugin must not take VisiData down with it. Report it,
@@ -272,7 +282,7 @@ void roc_crashed(const uint8_t *bytes, size_t len) {
         fprintf(stderr, "%s\n", message);
     }
 
-    compiled_model_is_live = 0;
+    if (crashing != NULL) crashing->model_is_live = 0;
     if (crash_guard_armed) {
         crash_guard_armed = 0;
         longjmp(crash_landing, 1);
@@ -281,46 +291,61 @@ void roc_crashed(const uint8_t *bytes, size_t len) {
 }
 
 int roc_vd_plugin_abi_version(void) {
-    return ROC_VD_ABI_VERSION;
+    return ROC_VD_PLUGIN_ABI_VERSION;
 }
 
-int roc_vd_plugin_init(const roc_vd_api_T *api, int handle) {
-    if (api == NULL || api->abi_version != ROC_VD_ABI_VERSION) return 0;
-    roc_vd_enter(api, handle);
+/* Start one plugin and return it. NULL if it would not start. */
+void *roc_vd_plugin_new(const roc_vd_api_T *api, int handle) {
+    /* volatile: setjmp is below, and longjmp may clobber a local that is not. */
+    roc_vd_instance_T *volatile instance;
 
+    if (api == NULL || api->abi_version != ROC_VD_ABI_VERSION) return NULL;
+    instance = calloc(1, sizeof *instance);
+    if (instance == NULL) return NULL;
+    instance->handle = handle;
+
+    roc_vd_enter(api, handle);
+    crashing = instance;
     crash_guard_armed = 1;
     if (setjmp(crash_landing) != 0) {
         crash_guard_armed = 0;
-        return 0;
+        crashing = NULL;
+        free((void *)instance);
+        return NULL;
     }
-    compiled_model = roc_vd_init();
+    instance->model = roc_vd_init();
     crash_guard_armed = 0;
-    compiled_model_is_live = 1;
-    return 1;
+    crashing = NULL;
+    instance->model_is_live = 1;
+    return instance;
 }
 
-char *roc_vd_plugin_event(const roc_vd_api_T *api, int handle,
+char *roc_vd_plugin_event(void *handle, const roc_vd_api_T *api,
                           const char *json, size_t len, size_t *out_len) {
+    roc_vd_instance_T *instance = handle;
     RocStr event;
     void *next;
 
     if (out_len != NULL) *out_len = 0;
-    if (!compiled_model_is_live) return NULL;
+    if (instance == NULL || !instance->model_is_live) return NULL;
 
-    roc_vd_enter(api, handle);
+    roc_vd_enter(api, instance->handle);
     roc_vd_clear_reply();
     event = roc_str_from(json, len);
 
+    crashing = instance;
     crash_guard_armed = 1;
     if (setjmp(crash_landing) != 0) {
         /* The model went with the failed call, so this plugin is done. */
         crash_guard_armed = 0;
-        compiled_model_is_live = 0;
+        crashing = NULL;
+        instance->model_is_live = 0;
         return NULL;
     }
-    next = roc_vd_handle(compiled_model, event);
+    next = roc_vd_handle(instance->model, event);
     crash_guard_armed = 0;
-    compiled_model = next;
+    crashing = NULL;
+    instance->model = next;
 
     return roc_vd_take_reply(out_len);
 }
@@ -329,9 +354,12 @@ void roc_vd_plugin_free(char *ptr) {
     free(ptr);
 }
 
-void roc_vd_plugin_deinit(void) {
-    compiled_model_is_live = 0;
-    roc_vd_clear_reply();
+void roc_vd_plugin_unload(void *handle) {
+    roc_vd_instance_T *instance = handle;
+
+    if (instance == NULL) return;
+    instance->model_is_live = 0;
+    free(instance);
 }
 
 #endif /* ROC_VD_EMBEDDED */

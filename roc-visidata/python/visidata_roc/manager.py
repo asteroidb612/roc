@@ -76,6 +76,45 @@ def rocLoad(vd, path):
 
 
 @VisiData.api
+def rocInstance(vd, path, prefer_compiled=True):
+    """Load a plugin for one caller's exclusive use, compiled if it can be.
+
+    Loaders need this rather than `rocLoad`. A loader's state *is* the table it
+    parsed, so two sheets cannot share one — and it must never be swapped from
+    under a sheet by a background upgrade, because the replacement starts with
+    no table at all. So the compile happens up front, here, and the caller owns
+    what it gets back.
+
+    Compiling up front is also the fast path rather than a delay: interpreted,
+    a Roc loader parses about 240 µs per row, against 0.4 µs compiled
+    (`bench/RESULTS.md` §4). Waiting ~3 s once for a build that is then cached
+    beats parsing anything larger than a toy file interpreted.
+    """
+    from .tier2 import CompiledPlugin, build, find_compiler
+
+    path = os.path.abspath(os.path.expanduser(path))
+    compiler = find_compiler(vd.options.roc_compiler or None)
+
+    if prefer_compiled and compiler and vd.options.roc_compile:
+        try:
+            library = build(path, vd.options.roc_compiler or None)
+            plugin = CompiledPlugin(vd.rocEngine, path, library,
+                                    RocPlugin.next_handle())
+            vd.rocPlugins[plugin.handle] = plugin
+            return plugin
+        except Exception as e:
+            vd.warning(f"roc: {os.path.basename(path)} would not compile, "
+                       f"running it interpreted: {e}")
+
+    plugin = RocPlugin(vd.rocEngine, path)
+    vd.rocPlugins[plugin.handle] = plugin
+    if not compiler:
+        vd.warning(f"roc: {plugin.name} is interpreted — install a roc compiler "
+                   f"for anything bigger than a small file")
+    return plugin
+
+
+@VisiData.api
 def rocUpgrade(vd, plugin):
     """Build this plugin to native code, off the UI thread, and swap it in.
 

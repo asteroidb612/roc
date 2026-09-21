@@ -14,7 +14,12 @@ import json
 import os
 import sys
 
+#: The callback table in platform/roc_vd_api.h.
 ABI_VERSION = 1
+
+#: What a compiled plugin exports; see platform/host.c. Separate from the
+#: table above, and at 2 because it became per-instance.
+PLUGIN_ABI_VERSION = 2
 
 #: Where the engine looks for the library, in order.
 _LIB_NAMES = ("libroc_vd_engine.so", "libroc_vd_engine.dylib")

@@ -37,6 +37,13 @@ class RocPlugin:
     _handles = 0
     _handles_lock = threading.Lock()
 
+    @classmethod
+    def next_handle(cls):
+        """Mint a handle for a plugin loaded some other way (a compiled one)."""
+        with cls._handles_lock:
+            cls._handles += 1
+            return cls._handles
+
     def __init__(self, engine, path):
         self.engine = engine
         self.path = os.path.abspath(path)
@@ -49,9 +56,7 @@ class RocPlugin:
         self._lock = threading.Lock()
         self._owner = None                 # thread inside a call, for reentrancy
 
-        with RocPlugin._handles_lock:
-            RocPlugin._handles += 1
-            self.handle = RocPlugin._handles
+        self.handle = RocPlugin.next_handle()
 
         error = ctypes.c_void_p()
         encoded = self.path.encode("utf-8")

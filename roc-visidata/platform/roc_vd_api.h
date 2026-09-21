@@ -16,7 +16,13 @@
 
 #include <stddef.h>
 
+/* The function table below: bumped when its shape changes. */
 #define ROC_VD_ABI_VERSION 1
+
+/* What a plugin compiled to a shared library exports, which is a separate
+ * contract with its own history: version 2 made it per-instance, so two sheets
+ * can open the same loader without sharing one table. */
+#define ROC_VD_PLUGIN_ABI_VERSION 2
 
 typedef struct roc_vd_api roc_vd_api_T;
 struct roc_vd_api {
