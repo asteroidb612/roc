@@ -62,11 +62,14 @@ def main():
     check(any(r.name == "hello.roc" and r.kind == "plugin" for r in listed),
           ":RocPlugins lists the plugin")
 
-    # A hook reaches a subscriber.
+    # A hook reaches a subscriber. Ask the registry which plugin is live
+    # rather than holding this one: with a compiler installed it may have been
+    # upgraded to a compiled plugin under the same handle by now.
     vd.rocSubscribe(plugin.handle, "rowSelected")
-    events_before = plugin.events
+    events_before = vd.rocPlugins[plugin.handle].events
     vd.rocHook("rowSelected", {"row": 1})
-    check(plugin.events == events_before + 1, "a hook reached the plugin")
+    check(vd.rocPlugins[plugin.handle].events == events_before + 1,
+          "a hook reached the plugin")
 
     # A config runs its main! at load.
     config = vd.rocLoad(os.path.join(HERE, "..", "examples", "visidatarc.roc"))
@@ -104,7 +107,8 @@ def main():
             sheet.cursorVisibleColIndex = i
             break
     check(sheet.cursorCol.name == "amount", "the cursor is on the amount column")
-    replied = outliers.event("command:roc-select-outliers", vd.rocContext())
+    replied = vd.rocPlugins[outliers.handle].event(
+        "command:roc-select-outliers", vd.rocContext())
     check(replied == 1, f"it found the one outlier (replied {replied!r})")
     check(len(sheet.selectedRows) == 1, "and selected it on the real sheet")
 

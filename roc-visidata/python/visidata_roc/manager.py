@@ -101,6 +101,10 @@ def rocUpgrade(vd, plugin):
             return
 
         # Swap only if this plugin is still the one loaded under that handle.
+        # Anything holding the old object directly keeps a plugin that no
+        # longer receives events, which is why everything routes through
+        # vd.rocPlugins[handle] rather than through a saved reference.
+        compiled.events = plugin.events
         if vd.rocPlugins.get(plugin.handle) is plugin:
             vd.rocPlugins[plugin.handle] = compiled
             plugin.unload()

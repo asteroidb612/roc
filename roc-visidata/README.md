@@ -178,6 +178,16 @@ the plugin stays interpreted, which is fine for everything but computation.
   the shared-library patch, which is ELF-only today.
 - **The engine is ~55 MB**, because it is the whole Roc compiler.
 
+## Testing
+
+```sh
+./test/run.sh
+```
+
+`engine_test.py` drives the engine with a stub in place of VisiData, so it needs
+no terminal and no sheet. `visidata_test.py` runs against the real thing.
+`tier2_test.py` needs a `roc` compiler and skips cleanly without one.
+
 ## Layout
 
 ```
@@ -186,7 +196,8 @@ platform/   the Roc side: main.roc, config.roc, column.roc, VisiData.roc, Value.
 engine/     engine.c — compile a .roc file and call its entrypoints
 python/     visidata_roc: ctypes only, no C extension to build
 examples/   plugins, a column, and a config
-test/       engine_test.py (no VisiData at all), visidata_test.py (the real thing)
+test/       run.sh, and: engine_test.py (no VisiData at all), visidata_test.py
+            (the real thing), tier2_test.py (the compiled tier)
 bench/      the numbers behind the speed claims
 PLAN.md     the design, and what measuring it changed
 ```
