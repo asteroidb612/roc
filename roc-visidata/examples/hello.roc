@@ -1,7 +1,7 @@
 ## The smallest useful plugin: a command that reports on the current sheet.
 ##
 ## Drop this in ~/.visidata/roc/ and press z# — there is nothing to build.
-app [Model, plugin] { vd: platform "../platform/main.roc" }
+app [Model, plugin] { vd: platform "platform/main.roc" }
 
 import vd.VisiData
 import vd.Value
@@ -13,7 +13,7 @@ plugin = { init!, handle! }
 
 init! : () => Try(Model, _)
 init! = || {
-    VisiData.add_command!("z#", "roc-hello", "say hello, from Roc, inside VisiData")
+    VisiData.add_command!("zR", "roc-hello", "say hello, from Roc, inside VisiData")
     Ok(0)
 }
 

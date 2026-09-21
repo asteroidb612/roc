@@ -4,7 +4,7 @@
 ## Add it with `roc-addcol` on a numeric column. The whole column crosses the
 ## boundary once, gets mapped here, and comes back — see bench/RESULTS.md for
 ## what that is and is not worth.
-app [map_floats, map_strs] { vd: platform "../platform/column.roc" }
+app [map_floats, map_strs] { vd: platform "platform/column.roc" }
 
 map_floats : List(F64) -> List(F64)
 map_floats = |values| {

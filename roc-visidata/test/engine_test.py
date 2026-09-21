@@ -81,7 +81,7 @@ def main():
     registrations = [s for s in stub.expressions if "_roc_add_command" in s]
     check(len(registrations) == 1, "init! registered exactly one command")
     check("roc-hello" in registrations[0], "it registered roc-hello")
-    check("z#" in registrations[0], "bound to z#")
+    check("zR" in registrations[0], "bound to zR")
 
     # An event it does not handle should change nothing.
     before = len(stub.statements)

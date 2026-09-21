@@ -83,6 +83,18 @@ def _roc_add_command(plugin_id, keystrokes, longname, help_text):
 
     execstr = f"vd.rocDispatch({plugin_id!r}, {'command:' + longname!r})"
     BaseSheet.addCommand(keystrokes or None, longname, execstr, help_text or "")
+
+    # A binding on BaseSheet loses to one VisiData already made on a more
+    # specific sheet type, and it loses silently, so say something.
+    if keystrokes:
+        from visidata import TableSheet
+
+        existing = vd.bindkeys.get(keystrokes, TableSheet)
+        if isinstance(existing, dict):
+            other = {v for k, v in existing.items() if v != longname}
+            if other:
+                vd.warning(f"roc: {keystrokes} is already bound to "
+                           f"{', '.join(sorted(other))}; {longname} will not get it")
     return longname
 
 

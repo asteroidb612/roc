@@ -104,13 +104,19 @@ the model and one event and returns the next model. The model lives boxed in
 the host between events, so a plugin keeps state without a mutable global, and
 an event that fails leaves the previous model intact.
 
-Three kinds of file, told apart by the platform in the app header:
+A plugin names its platform by path, and that path is resolved relative to the
+plugin file. roc-visidata puts a `platform` symlink in the plugin directory
+pointing at the installed platform, so every plugin can simply say
+`platform "platform/main.roc"` wherever it lives.
+
+Four kinds of file, told apart by the platform in the app header:
 
 | Platform | What it is | Entrypoints |
 | --- | --- | --- |
 | `platform/main.roc` | a plugin | `init!`, `handle!` |
 | `platform/config.roc` | `~/.visidatarc.roc` | `main!` |
 | `platform/column.roc` | a computed column | `map_floats`, `map_strs` |
+| `platform/loader.roc` | a loader that keeps the data in Roc | `load!`, `columns`, `nrows`, `cell` |
 
 `VisiData.roc` has the API: `status!`, `add_command!`, `bind_key!`,
 `subscribe!`, `set_option!`, `sheet_name!`, `nrows!`, `column!`,
@@ -187,6 +193,10 @@ the plugin stays interpreted, which is fine for everything but computation.
 `engine_test.py` drives the engine with a stub in place of VisiData, so it needs
 no terminal and no sheet. `visidata_test.py` runs against the real thing.
 `tier2_test.py` needs a `roc` compiler and skips cleanly without one.
+`vd_pty_test.py` starts the actual `vd` binary in a pty, lets it load a plugin
+at startup, presses the key that plugin registered and reads the status line
+off the screen — which is the only test that catches things like a plugin being
+unable to find the platform from outside the repository.
 
 ## Layout
 
@@ -197,7 +207,8 @@ engine/     engine.c — compile a .roc file and call its entrypoints
 python/     visidata_roc: ctypes only, no C extension to build
 examples/   plugins, a column, and a config
 test/       run.sh, and: engine_test.py (no VisiData at all), visidata_test.py
-            (the real thing), tier2_test.py (the compiled tier)
+            (the real thing), tier2_test.py (the compiled tier),
+            vd_pty_test.py (the actual vd binary in a terminal)
 bench/      the numbers behind the speed claims
 PLAN.md     the design, and what measuring it changed
 ```

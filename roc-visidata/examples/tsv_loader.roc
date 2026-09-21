@@ -7,7 +7,7 @@
 ## The table never leaves Roc. VisiData asks for the screenful it is about to
 ## draw and gets that, so a million-row file costs a million rows of parsing
 ## once and about fifty cells per keystroke after that.
-app [Table, loader] { vd: platform "../platform/loader.roc" }
+app [Table, loader] { vd: platform "platform/loader.roc" }
 
 import vd.VisiData
 

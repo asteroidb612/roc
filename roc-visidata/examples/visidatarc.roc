@@ -2,7 +2,7 @@
 ##
 ## Copy this to ~/.visidatarc.roc. It runs after ~/.visidatarc, so anything
 ## your Python config already sets wins.
-app [main!] { vd: platform "../platform/config.roc" }
+app [main!] { vd: platform "platform/config.roc" }
 
 import vd.VisiData
 import vd.Value

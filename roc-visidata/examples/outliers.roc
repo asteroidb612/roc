@@ -3,7 +3,7 @@
 ##
 ## The whole column crosses the boundary once, the arithmetic happens in Roc,
 ## and the selection goes back in one call.
-app [Model, plugin] { vd: platform "../platform/main.roc" }
+app [Model, plugin] { vd: platform "platform/main.roc" }
 
 import vd.VisiData
 import vd.Value
@@ -15,7 +15,7 @@ plugin = { init!, handle! }
 
 init! : () => Try(Model, _)
 init! = || {
-    VisiData.add_command!("z%", "roc-select-outliers",
+    VisiData.add_command!("zX", "roc-select-outliers",
         "select rows more than 3 sigma from the mean of this column")
     Ok(0)
 }

@@ -192,11 +192,42 @@ def rocHook(vd, hook, data=None):
 
 
 @VisiData.api
+def rocEnsurePlatform(vd, directory):
+    """Make `platform/` inside the plugin directory point at ours.
+
+    A plugin names its platform by path, and that path is resolved relative to
+    the plugin file — so a plugin in ~/.visidata/roc cannot reach a platform
+    that lives in the installed package. A symlink beside the plugins fixes
+    that once, and lets every plugin say `platform "platform/main.roc"`
+    wherever it lives.
+    """
+    link = os.path.join(directory, "platform")
+    target = os.path.abspath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "platform"))
+
+    if not os.path.isdir(target):
+        return None
+    if os.path.islink(link):
+        if os.path.realpath(link) == os.path.realpath(target):
+            return link
+        os.unlink(link)
+    elif os.path.exists(link):
+        return link                 # a real directory: leave it alone
+    try:
+        os.symlink(target, link)
+    except OSError as e:
+        vd.debug(f"roc: could not link {link} -> {target}: {e}")
+        return None
+    return link
+
+
+@VisiData.api
 def rocLoadDir(vd, directory=None):
     """Load every `.roc` file in the plugin directory."""
     directory = os.path.expanduser(directory or vd.options.roc_plugin_dir)
     if not os.path.isdir(directory):
         return []
+    vd.rocEnsurePlatform(directory)
 
     loaded = []
     for name in sorted(os.listdir(directory)):
