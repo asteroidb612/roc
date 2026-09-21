@@ -174,3 +174,104 @@ void roc_vd_host_reply(RocStr arg0) {
 RocStr roc_vd_host_id(void) {
     return roc_str_from_cstr(current.id);
 }
+
+/* ========================================================================= */
+/* The compiled tier                                                         */
+/* ========================================================================= */
+
+/*
+ * What a plugin built as a shared library exports, and what visidata_roc looks
+ * up in it. The engine includes this file with ROC_VD_EMBEDDED set and leaves
+ * this out, because an interpreted plugin has no linked entrypoints — it is
+ * called through libroc_embed instead.
+ *
+ * Everything above is shared between the two, which is what makes a plugin the
+ * same program run two ways: the hosted functions a compiled plugin calls are
+ * the very ones the interpreter dispatches into.
+ */
+#ifndef ROC_VD_EMBEDDED
+
+#include <setjmp.h>
+
+/* Provided by the Roc side of the shared library, per the platform's
+ * `provides` section. */
+extern void *roc_vd_init(void);
+extern void *roc_vd_handle(void *model, RocStr event);
+
+static void *compiled_model;
+static int compiled_model_is_live;
+
+/* A Roc crash lands here rather than taking VisiData with it. */
+static jmp_buf crash_landing;
+static int crash_guard_armed;
+
+void roc_panic(RocStr *message, unsigned int tag_id) {
+    (void)tag_id;
+    if (current.api != NULL && message != NULL) {
+        char text[512];
+        size_t len = roc_str_len(message);
+
+        if (len > sizeof text - 1) len = sizeof text - 1;
+        memcpy(text, roc_str_bytes(message), len);
+        text[len] = '\0';
+        current.api->message(text, strlen(text), 1);
+    }
+    if (crash_guard_armed) longjmp(crash_landing, 1);
+    abort();
+}
+
+int roc_vd_plugin_abi_version(void) {
+    return ROC_VD_ABI_VERSION;
+}
+
+int roc_vd_plugin_init(const roc_vd_api_T *api, int handle) {
+    if (api == NULL || api->abi_version != ROC_VD_ABI_VERSION) return 0;
+    roc_vd_enter(api, handle);
+
+    crash_guard_armed = 1;
+    if (setjmp(crash_landing) != 0) {
+        crash_guard_armed = 0;
+        return 0;
+    }
+    compiled_model = roc_vd_init();
+    crash_guard_armed = 0;
+    compiled_model_is_live = 1;
+    return 1;
+}
+
+char *roc_vd_plugin_event(const roc_vd_api_T *api, int handle,
+                          const char *json, size_t len, size_t *out_len) {
+    RocStr event;
+    void *next;
+
+    if (out_len != NULL) *out_len = 0;
+    if (!compiled_model_is_live) return NULL;
+
+    roc_vd_enter(api, handle);
+    roc_vd_clear_reply();
+    event = roc_str_from(json, len);
+
+    crash_guard_armed = 1;
+    if (setjmp(crash_landing) != 0) {
+        /* The model went with the failed call, so this plugin is done. */
+        crash_guard_armed = 0;
+        compiled_model_is_live = 0;
+        return NULL;
+    }
+    next = roc_vd_handle(compiled_model, event);
+    crash_guard_armed = 0;
+    compiled_model = next;
+
+    return roc_vd_take_reply(out_len);
+}
+
+void roc_vd_plugin_free(char *ptr) {
+    free(ptr);
+}
+
+void roc_vd_plugin_deinit(void) {
+    compiled_model_is_live = 0;
+    roc_vd_clear_reply();
+}
+
+#endif /* ROC_VD_EMBEDDED */

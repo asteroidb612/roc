@@ -13,7 +13,7 @@ Every number below is the best of 3–5 runs. Reproduce with `./run.sh`.
 | --- | --- |
 | Can a plugin be compiled in-process at startup? | Yes for one (154 ms), no for ten (~1.5 s). Compile lazily. |
 | Does the interpreted bulk path beat Python? | **No.** It is 22× slower than VisiData's own expression column and 90× slower than a list comprehension. |
-| Then where is the speed? | Only in the compiled tier — and even that is capped at ~1.7× unless Roc owns the data. |
+| Then where is the speed? | Only in the compiled tier. Roc owning the data is the right architecture, but interpreted it is 242× slower than VisiData's own loader, so tier 2 is a precondition rather than an optimization. |
 
 ## 1. Compile latency
 
@@ -129,7 +129,40 @@ a million rows to fill it would be a pessimization. The bulk path is for
 whole-column work — sort, aggregate, select-by-expression, save — not for
 display.
 
-## 4. Things found along the way
+## 4. The loader: Roc owning the data
+
+Section 3 argued the speed case belongs with a loader whose columns never cross
+into Python per row. `examples/tsv_loader.roc` is that loader, and
+`loader_bench.py` puts it against VisiData's own tsv loader on the same file
+(50,000 rows, three columns).
+
+| | VisiData's tsv loader | Roc, interpreted | |
+| --- | --- | --- | --- |
+| parse the file | 1,898 ns/row | 459,723 ns/row | **242× slower** |
+| a screenful (50 rows × 3 cols) | 0.04 ms | 14.92 ms | **373× slower** |
+| every value in one column | 211 ns/row | 400,921 ns/row | **1,900× slower** |
+
+Before believing that, the loader was checked for a quadratic mistake — an
+`append` that copies would make parsing O(n²) and would be a bug rather than a
+cost:
+
+| rows | ns/row |
+| --- | --- |
+| 5,000 | 226,990 |
+| 10,000 | 244,682 |
+| 20,000 | 238,756 |
+
+Flat, so it is linear, and this is simply what the interpreter costs. It agrees
+with §2: a trivial map costs ~3.4 µs per element, a parsed row is a split plus
+a few appends — tens of operations — and tens times 3.4 µs is what shows up.
+
+**So the architecture is right and the interpreted tier cannot carry it.** Even
+the screenful, the case the design is built around, costs 15 ms interpreted,
+which is felt on every keystroke. This is the third and clearest statement of
+the same finding: the compiled tier is a precondition for everything except
+commands, bindings, hooks and config — not an optimization for hot plugins.
+
+## 5. Things found along the way
 
 **The engine is 57 MB.** `libroc_embed.a` is 199 MB; linked into a binary and
 stripped it is 57 MB (138 MB unstripped). That is what a wheel would carry.
@@ -155,6 +188,27 @@ lands in the host process; this is a live example of one.
 `Str.with_ascii_uppercased`. It type-checked as written and failed at the
 first call with `runtime error`, which is worth knowing when writing plugins
 against a compiler this new.
+
+**Writing Roc against a compiler this new needs a probe harness.** Several
+things type-check and then fail at the first call, so the working spellings
+were found by compiling and running candidates rather than by reading docs:
+
+| Wanted | Works | Does not |
+| --- | --- | --- |
+| widen an int to a float | `U64.to_f64(n)`, `I64.to_f64(n)`, `n.to_f64()` | `F64.from_int`, `Num.to_frac`, `F64.from` |
+| narrow a float-width int | `n.to_i64_try()`, `n.to_u64_try()` (they return `Try`) | `n.to_i64()`, `U64.to_i64(n)`, `I64.from_u64(n)` |
+| split a string | `Str.split_on(s, sep)`, `s.split_on(sep)` | `Str.split` |
+| uppercase | `Str.with_ascii_uppercased` | `Str.to_upper` |
+| boolean or | `or` | `||` |
+| a range to loop over | `while`, `List.map_with_index` | `List.range`, `0..3` |
+
+`List.sum`, `F64.sqrt`, `x.sqrt()`, `List.get`, list patterns with `.. as rest`
+and nested `var`s inside `while` all work as written.
+
+**An assignment inside a `match` branch needs braces**, and getting it wrong
+inside a *platform module* panics the compiler on `unreachable` instead of
+reporting a type error — a second way to abort the host, alongside the import
+bug above. The same mistake in an app file reports cleanly.
 
 **Releasing a `List(Str)` that Roc returns** needs ownership rules the harness
 does not implement — freeing it as an ordinary list fails with `free():

@@ -29,6 +29,18 @@ platform ""
         "roc_vd_host_reply": Host.reply!,
         "roc_vd_host_id": Host.id!,
     }
+    # The compiled tier: a plugin built for it is a shared library VisiData
+    # dlopens. Building one needs `build.sh` to have made targets/libhost.a
+    # first; the interpreted tier ignores all of this.
+    targets: {
+        inputs_dir: "targets/",
+        x64glibc: { inputs: ["libhost.a", app], output: Shared },
+        arm64glibc: { inputs: ["libhost.a", app], output: Shared },
+        x64musl: { inputs: ["libhost.a", app], output: Shared },
+        arm64musl: { inputs: ["libhost.a", app], output: Shared },
+        x64mac: { inputs: ["libhost.a", app], output: Shared },
+        arm64mac: { inputs: ["libhost.a", app], output: Shared },
+    }
 
 import Host
 import VisiData

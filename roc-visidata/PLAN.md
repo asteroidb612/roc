@@ -451,6 +451,12 @@ aggregate, select-by-expression, save — not for display.
 
 ### So where the speed actually is
 
+**Roc owning the data — but only compiled.** M4 built the loader and measured
+it (`bench/RESULTS.md` §4): interpreted, a Roc TSV loader parses 242× slower
+than VisiData's own, and even a single screenful costs 15 ms. The architecture
+is right and the interpreted tier cannot carry it. Everything below is
+therefore a statement about the compiled tier.
+
 **Roc owning the data.** A Roc loader parses a file into native columns; Roc
 operations run over those columns without ever touching a Python object; only
 the cells actually on screen cross into Python. That is the architecture where
@@ -477,8 +483,11 @@ categories 3 above, and it is the one that makes the no-build-step promise
 true.
 
 **Tier 2 — compiled, native.** The same `.roc` file built against `libhost.a`
-as a shared library, `dlopen`ed and called directly. Required, not optional,
-for categories 1 and 2. The automatic background build and hot swap described
+as a shared library, `dlopen`ed and called directly. A **precondition** for
+categories 1 and 2, not an optimization: measured three separate ways — a
+trivial map, a derived column, and a whole loader — the interpreter costs about
+3.4 µs per basic operation, which is 22× slower than Python on a column and
+242× slower on a loader. The automatic background build and hot swap described
 earlier still applies, and the artifact cache still means the second run starts
 native — but a plugin that does real computation with no compiler installed
 should say so rather than quietly run 22× slower than Python.

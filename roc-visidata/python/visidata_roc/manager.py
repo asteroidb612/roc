@@ -1,6 +1,7 @@
 """Finding Roc plugins, loading them, and getting events to them."""
 
 import os
+import threading
 import traceback
 
 from visidata import AttrDict, Column, ItemColumn, Sheet, VisiData, vd
@@ -17,6 +18,10 @@ vd.option("roc_autoload", True,
           "load Roc plugins from roc_plugin_dir at startup")
 vd.option("roc_reload_on_save", True,
           "recompile a Roc plugin when its source changes on disk")
+vd.option("roc_compile", True,
+          "build loaded plugins to native code in the background, if a roc compiler is installed")
+vd.option("roc_compiler", "",
+          "path to the roc compiler (empty to look on PATH)")
 
 
 @VisiData.lazy_property
@@ -65,7 +70,48 @@ def rocLoad(vd, path):
             plugin.run_config()
         except EngineError as e:
             vd.warning(f"roc: {plugin.name}: {e}")
+    elif plugin.kind == KIND_PLUGIN and vd.options.roc_compile:
+        vd.rocUpgrade(plugin)
     return plugin
+
+
+@VisiData.api
+def rocUpgrade(vd, plugin):
+    """Build this plugin to native code, off the UI thread, and swap it in.
+
+    The plugin keeps working interpreted meanwhile; if there is no compiler
+    installed, or the build fails, nothing happens and it stays interpreted.
+    That is the whole degradation story — a missing compiler is not an error.
+    """
+    from .tier2 import CompiledPlugin, build, find_compiler
+
+    if not find_compiler(vd.options.roc_compiler or None):
+        return None
+
+    def run():
+        try:
+            library = build(plugin.path, vd.options.roc_compiler or None)
+        except Exception as e:
+            vd.debug(f"roc: {plugin.name} stays interpreted: {e}")
+            return
+        try:
+            compiled = CompiledPlugin(vd.rocEngine, plugin.path, library, plugin.handle)
+        except Exception as e:
+            vd.debug(f"roc: {plugin.name} built but would not load: {e}")
+            return
+
+        # Swap only if this plugin is still the one loaded under that handle.
+        if vd.rocPlugins.get(plugin.handle) is plugin:
+            vd.rocPlugins[plugin.handle] = compiled
+            plugin.unload()
+            vd.debug(f"roc: {plugin.name} is now compiled")
+        else:
+            compiled.unload()
+
+    thread = threading.Thread(target=run, daemon=True,
+                              name=f"roc-build-{plugin.name}")
+    thread.start()
+    return thread
 
 
 @VisiData.lazy_property

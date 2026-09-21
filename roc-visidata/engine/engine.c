@@ -10,6 +10,7 @@
  * plugin are the same program run two ways.
  */
 
+#define ROC_VD_EMBEDDED 1
 #include "../platform/host.c"
 
 #include "roc_embed.h"
