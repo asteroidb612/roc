@@ -27,6 +27,7 @@ app [Model, plugin] { vim: platform "../../platform-inprocess/main.roc" }
 import vim.Vim
 import vim.Value
 import Notebook
+import Permalink
 
 # =============================================================================
 # Where things live
@@ -403,6 +404,11 @@ apply_mappings! = || {
 
 # =============================================================================
 # A link to the line under the cursor
+#
+# The URL rewrite - ssh to https, dropping a trailing .git - is
+# Permalink.web_url, which is pure and has its own tests
+# (`roc test Permalink.roc`). What is left here is the Vim half: running git,
+# reading the cursor, and writing the clipboard.
 # =============================================================================
 
 github_url! : () => Try({}, _)
@@ -415,7 +421,7 @@ github_url! = || {
         ref = Str.trim(Vim.system!("git rev-parse HEAD")?)
         file = Vim.eval_str!("expand('%')")?
         row = Vim.eval_int!("line('.')")?
-        url = "${web_url(remote)}/blob/${ref}/${file}?plain=1#L${I64.to_str(row)}"
+        url = "${Permalink.web_url(remote)}/blob/${ref}/${file}?plain=1#L${I64.to_str(row)}"
         register = clipboard_register!()?
         _ = Vim.call!("setreg", [Value.Text(register), Value.Text(url)])
         Vim.echom!("GitHub URL yanked to register ${register}: ${url}")
@@ -434,47 +440,6 @@ clipboard_register! = || {
         Ok("\"")
     }
 }
-
-## Turn whatever `git config remote.origin.url` said into something a browser
-## can open.
-web_url : Str -> Str
-web_url = |remote| {
-    over_https =
-        if Str.starts_with(remote, "git@github.com:") {
-            "https://github.com/${Str.drop_prefix(remote, "git@github.com:")}"
-        } else {
-            remote
-        }
-    # Only a trailing ".git" is the extension. The original stripped the first
-    # ".git" anywhere in the URL, which mangles a repo called "foo.github".
-    drop_suffix(over_https, ".git")
-}
-
-## `text` without `suffix` on the end, if it was there at all.
-##
-## `Str.drop_last_bytes` says this in one call, but it crashes the interpreter
-## these plugins run under, so this counts bytes itself.
-drop_suffix : Str, Str -> Str
-drop_suffix = |text, suffix|
-    if Str.ends_with(text, suffix) {
-        keep = Str.count_utf8_bytes(text) - Str.count_utf8_bytes(suffix)
-        var $kept = []
-        var $index = 0
-        for byte in Str.to_utf8(text) {
-            if $index < keep {
-                $kept = $kept.append(byte)
-            } else {
-                {}
-            }
-            $index = $index + 1
-        }
-        match Str.from_utf8($kept) {
-            Ok(shorter) => shorter
-            Err(_) => text
-        }
-    } else {
-        text
-    }
 
 # =============================================================================
 # The notebook: run the fenced block at the cursor, write the output below it

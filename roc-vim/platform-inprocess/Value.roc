@@ -618,3 +618,155 @@ parse_number = |bytes, start| {
         }
     }
 }
+
+# =============================================================================
+# Tests
+#
+# This is the whole channel protocol's encoding, so a mistake here is a
+# mistake in every value that crosses into or out of a plugin. It had no
+# tests until now; `roc test Value.roc` runs these.
+# =============================================================================
+
+## Whether a Try came back as an error - only used by the tests below.
+is_err : Try(a, e) -> Bool
+is_err = |result|
+    match result {
+        Ok(_) => Bool.False
+        Err(_) => Bool.True
+    }
+
+# --- round trips -------------------------------------------------------
+
+expect Value.parse(Value.to_str(Value.Null)) == Ok(Value.Null)
+expect Value.parse(Value.to_str(Value.Bool(True))) == Ok(Value.Bool(True))
+expect Value.parse(Value.to_str(Value.Bool(False))) == Ok(Value.Bool(False))
+expect Value.parse(Value.to_str(Value.Int(-42))) == Ok(Value.Int(-42))
+expect Value.parse(Value.to_str(Value.Text("hi \"there\"\n"))) == Ok(Value.Text("hi \"there\"\n"))
+
+round_trip_array : Value
+round_trip_array = Value.Array([Value.Int(1), Value.Text("two"), Value.Null])
+
+expect Value.parse(Value.to_str(round_trip_array)) == Ok(round_trip_array)
+
+round_trip_object : Value
+round_trip_object = Value.Object([("a", Value.Int(1)), ("b", Value.Array([]))])
+
+expect Value.parse(Value.to_str(round_trip_object)) == Ok(round_trip_object)
+
+# --- encoding: literal text, matched against what Vim's own JSON expects ---
+
+expect Value.to_str(Value.Null) == "null"
+expect Value.to_str(Value.Bool(True)) == "true"
+expect Value.to_str(Value.Bool(False)) == "false"
+expect Value.to_str(Value.Int(7)) == "7"
+expect Value.to_str(Value.Text("hi")) == "\"hi\""
+expect Value.to_str(Value.Array([Value.Int(1), Value.Int(2)])) == "[1,2]"
+expect Value.to_str(Value.Object([("a", Value.Int(1))])) == "{\"a\":1}"
+# Field order is kept, not sorted.
+expect Value.to_str(Value.Object([("b", Value.Int(2)), ("a", Value.Int(1))])) == "{\"b\":2,\"a\":1}"
+
+# A string with characters JSON cannot write literally.
+expect Value.to_str(Value.Text("a\"b\\c\nd\te")) == "\"a\\\"b\\\\c\\nd\\te\""
+# A control character with no short escape falls back to \u00XX.
+expect Value.to_str(Value.Text("\u(0001)")) == "\"\\u0001\""
+
+# --- parsing -------------------------------------------------------------
+
+expect Value.parse("null") == Ok(Value.Null)
+expect Value.parse("true") == Ok(Value.Bool(True))
+expect Value.parse("false") == Ok(Value.Bool(False))
+expect Value.parse("0") == Ok(Value.Int(0))
+expect Value.parse("-17") == Ok(Value.Int(-17))
+expect Value.parse("3.5") == Ok(Value.Float(3.5))
+expect Value.parse("2e3") == Ok(Value.Float(2000.0))
+expect Value.parse("\"\"") == Ok(Value.Text(""))
+expect Value.parse("  \n  42  \n  ") == Ok(Value.Int(42))
+expect Value.parse("[]") == Ok(Value.Array([]))
+expect Value.parse("{}") == Ok(Value.Object([]))
+expect Value.parse("[1, 2, 3]") == Ok(Value.Array([Value.Int(1), Value.Int(2), Value.Int(3)]))
+expect Value.parse("[[1],[2]]") == Ok(Value.Array([Value.Array([Value.Int(1)]), Value.Array([Value.Int(2)])]))
+expect
+    Value.parse("{\"a\": 1, \"b\": [true, null]}")
+    == Ok(Value.Object([("a", Value.Int(1)), ("b", Value.Array([Value.Bool(True), Value.Null]))]))
+
+# What Vim actually sends: a Notify envelope with nested data.
+expect
+    Value.parse("{\"event\":\"BufWritePost\",\"data\":{\"file\":\"a.md\",\"buffer\":3}}")
+    == Ok(
+        Value.Object(
+            [
+                ("event", Value.Text("BufWritePost")),
+                ("data", Value.Object([("file", Value.Text("a.md")), ("buffer", Value.Int(3))])),
+            ],
+        ),
+    )
+
+# Backslash escapes.
+expect Value.parse("\"a\\nb\"") == Ok(Value.Text("a\nb"))
+expect Value.parse("\"a\\tb\"") == Ok(Value.Text("a\tb"))
+expect Value.parse("\"a\\\"b\"") == Ok(Value.Text("a\"b"))
+expect Value.parse("\"a\\\\b\"") == Ok(Value.Text("a\\b"))
+expect Value.parse("\"a\\/b\"") == Ok(Value.Text("a/b"))
+
+# \u escapes, including one outside the BMP via a surrogate pair.
+expect Value.parse("\"\\u0041\"") == Ok(Value.Text("A"))
+expect Value.parse("\"\\ud83d\\ude00\"") == Ok(Value.Text("\u(1F600)")) # 😀
+# A lone high surrogate (no partner follows) is not a valid code point on its
+# own, so parsing reports an error rather than producing invalid UTF-8.
+expect Value.parse("\"\\ud83d!\"") |> is_err
+
+# Trailing text after a complete value is an error, not a silent truncation.
+expect Value.parse("1 2") |> is_err
+expect Value.parse("") |> is_err
+expect Value.parse("{") |> is_err
+expect Value.parse("[1,]") |> is_err
+expect Value.parse("\"unterminated") |> is_err
+expect Value.parse("\"\\uZZZZ\"") |> is_err
+
+# --- accessors -------------------------------------------------------------
+
+expect Value.get(Value.Object([("a", Value.Int(1))]), "a") == Ok(Value.Int(1))
+expect Value.get(Value.Object([("a", Value.Int(1))]), "b") |> is_err
+expect Value.get(Value.Int(1), "a") |> is_err
+
+expect Value.at(Value.Array([Value.Int(10), Value.Int(20)]), 1) == Ok(Value.Int(20))
+expect Value.at(Value.Array([Value.Int(10)]), 5) |> is_err
+
+expect Value.as_str(Value.Text("hi")) == Ok("hi")
+expect Value.as_str(Value.Int(1)) |> is_err
+expect Value.as_int(Value.Int(5)) == Ok(5)
+# A whole-valued Float still answers as_int: Vim's own Number/Float split
+# does not always line up with which one a given expression evaluates to.
+expect Value.as_int(Value.Float(5.0)) == Ok(5)
+expect Value.as_int(Value.Float(5.9)) == Ok(6)
+expect Value.as_int(Value.Text("5")) |> is_err
+expect Value.as_f64(Value.Int(5)) == Ok(5.0)
+expect Value.as_f64(Value.Float(2.5)) == Ok(2.5)
+expect Value.as_bool(Value.Bool(True)) == Ok(True)
+expect Value.as_list(Value.Array([Value.Int(1)])) == Ok([Value.Int(1)])
+expect Value.as_object(Value.Object([("a", Value.Int(1))])) == Ok([("a", Value.Int(1))])
+
+expect Value.str_or(Value.Text("hi"), "default") == "hi"
+expect Value.str_or(Value.Int(1), "default") == "default"
+expect Value.int_or(Value.Int(9), 0) == 9
+expect Value.int_or(Value.Text("nope"), 0) == 0
+expect Value.field_or_null(Value.Object([("a", Value.Int(1))]), "a") == Value.Int(1)
+expect Value.field_or_null(Value.Object([]), "missing") == Value.Null
+expect Value.field_or_null(Value.Int(1), "a") == Value.Null
+
+# --- equality and type names ------------------------------------------------
+
+expect Value.Int(1) == Value.Int(1)
+expect Value.Int(1) != Value.Int(2)
+expect Value.Int(1) != Value.Text("1")
+# A number equals itself across Int and Float, the way Vim treats numbers.
+expect Value.is_eq(Value.Int(3), Value.Float(3.0))
+expect Value.Array([Value.Int(1), Value.Int(2)]) == Value.Array([Value.Int(1), Value.Int(2)])
+expect Value.Array([Value.Int(1)]) != Value.Array([Value.Int(1), Value.Int(2)])
+# Object equality cares about order: it is how Vim's Dict prints, and the
+# protocol relies on it for the envelope shape.
+expect Value.Object([("a", Value.Int(1)), ("b", Value.Int(2))]) != Value.Object([("b", Value.Int(2)), ("a", Value.Int(1))])
+
+expect Value.type_name(Value.Null) == "null"
+expect Value.type_name(Value.Array([])) == "an array"
+expect Value.type_name(Value.Object([])) == "an object"

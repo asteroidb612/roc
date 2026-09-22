@@ -83,3 +83,14 @@ decode_event = |text|
         }
         Err(_) => { name: "", data: Value.Null }
     }
+
+# =============================================================================
+# Tests
+# =============================================================================
+
+expect decode_event("{\"event\":\"BufWritePost\",\"data\":{\"file\":\"a.md\"}}") == { name: "BufWritePost", data: Value.Object([("file", Value.Text("a.md"))]) }
+expect decode_event("{\"event\":\"go\"}") == { name: "go", data: Value.Null }
+# Not JSON at all: no event to hand the plugin, rather than a crash.
+expect decode_event("not json") == { name: "", data: Value.Null }
+# No "event" field: same fallback.
+expect decode_event("{}") == { name: "", data: Value.Null }

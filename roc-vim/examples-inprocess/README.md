@@ -8,7 +8,7 @@ engine in [`../embed`](../embed), straight from the `.roc` source.
 | --- | --- |
 | `hello.roc` | the shape of a plugin: a model, `init!`, `handle!` |
 | `complete.roc` | the thing a plugin beside Vim cannot do — answer a `completefunc` while Vim waits |
-| `vimrc/` | a real vimrc, rewritten as a plugin: `main.roc` plus `Notebook.roc` |
+| `vimrc/` | a real vimrc, rewritten as a plugin: `main.roc`, `Notebook.roc`, `Permalink.roc` |
 | `vimrc.vim` | the dozen lines of Vimscript the vimrc plugin still needs |
 
 ## vimrc/
@@ -51,29 +51,37 @@ vim -u examples-inprocess/vimrc.vim
 ```
 
 Vim treats the directory as one plugin named `vimrc`, and saving any file in
-it — `main.roc` or `Notebook.roc` — rebuilds and restarts the whole thing.
+it — `main.roc`, `Notebook.roc`, or `Permalink.roc` — rebuilds and restarts
+the whole thing.
 
 With `g:roc_embed_library` set, Vim compiles it at startup and recompiles it
 whenever you save it. A file this size takes long enough to compile that you
 will notice it at startup — see the note in [`../embed/README.md`](../embed/README.md);
 building it once (`g:roc_prefer_source = 0`) makes startup instant again.
 
-### The part with its own tests
+### The parts with their own tests
 
-`Notebook.roc` holds the question "which fenced block does the cursor mean?",
-which turns out to have more edge cases than it looks: an unclosed fence, the
-cursor sitting below the last block, fences indented inside a list item. It
-imports no platform, so it is ordinary Roc and `roc test` runs it:
+Two questions in this plugin have real edge cases and are worth getting right
+on their own, without opening Vim: **which fenced block does the cursor
+mean** (`Notebook.roc` — an unclosed fence, the cursor below the last block,
+fences indented inside a list item) and **what URL does this remote turn
+into** (`Permalink.roc` — ssh vs. https, a trailing `.git` that is not always
+there, a repo named `foo.github` that a careless strip would mangle). Neither
+imports the platform, so both are ordinary Roc and `roc test` runs them:
 
 ```sh
-roc test examples-inprocess/vimrc/Notebook.roc      # 19 tests
-../test/module_test.sh                              # or every module
+roc test examples-inprocess/vimrc/Notebook.roc       # 19 tests
+roc test examples-inprocess/vimrc/Permalink.roc      # 10 tests
+../test/module_test.sh                               # every test in the repo
 ```
 
-The Vim half — read the buffer, run the code, write the output back — stays in
-`main.roc` as `run_block!`, and is thin. That division is the general rule: a
-module that imports `vim.Vim` cannot be tested on its own, because `roc test`
-has no platform to resolve `vim` against.
+The Vim halves — read the buffer and run the code, or run `git` and read the
+cursor — stay in `main.roc` as `run_block!` and `github_url!`, and are thin.
+Extraction is not what makes these testable, though: `roc test` will run an
+`expect` in any file, `main.roc` included, as long as the checked expression
+does not itself call a hosted effect. It is what makes each question a small,
+reusable, documented thing with its tests sitting right next to it, instead of
+logic buried in a 600-line file.
 
 ### What it changed on the way
 

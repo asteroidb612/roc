@@ -76,6 +76,18 @@ is_word_byte = |byte|
 matching_words! : Str => Try(List(Value), _)
 matching_words! = |base| {
     lines = Vim.lines!()?
+    var $matches = []
+    for word in matches_in(lines, base) {
+        $matches = $matches.append(Value.Text(word))
+    }
+    Ok($matches)
+}
+
+## Every distinct word across `lines` that starts with `base`, in the order
+## first seen, excluding `base` itself - completing a word with itself is not
+## a match.
+matches_in : List(Str), Str -> List(Str)
+matches_in = |lines, base| {
     var $found = []
     for line in lines {
         for word in words_in(line) {
@@ -87,11 +99,7 @@ matching_words! = |base| {
             }
         }
     }
-    var $matches = []
-    for word in $found {
-        $matches = $matches.append(Value.Text(word))
-    }
-    Ok($matches)
+    $found
 }
 
 ## Split a line into words, the way Vim's `iskeyword` roughly does.
@@ -121,3 +129,42 @@ push_word = |words, bytes|
             Err(_) => words
         }
     }
+
+# =============================================================================
+# Tests
+#
+# word_start, words_in and matches_in are the part of this plugin worth
+# reading carefully: get the byte math wrong and completion silently offers
+# the wrong word, or none. `roc test complete.roc` runs these directly, with
+# no Vim and nothing typed.
+# =============================================================================
+
+expect is_word_byte('a')
+expect is_word_byte('Z')
+expect is_word_byte('9')
+expect is_word_byte('_')
+expect !is_word_byte(' ')
+expect !is_word_byte('-')
+
+expect words_in("one two three") == ["one", "two", "three"]
+expect words_in("a-b_c") == ["b_c"] # one-letter words are dropped; a stays out, b_c is one word
+expect words_in("  ") == []
+expect words_in("hi, there!") == ["hi", "there"]
+
+# `col('.')` counts from 1 and points just past the typed text, so column 4 on
+# "food" (f-o-o-d, cursor after the third letter) means "foo" was typed.
+expect word_start("food", 4) == 0
+expect word_start("one two", 8) == 4 # cursor past "two"
+expect word_start("one two", 4) == 0 # cursor right after "one" (byte 4 is the space)
+expect word_start("one two", 5) == 4 # cursor right after the space: nothing typed yet
+expect word_start("", 1) == 0
+# The cursor at the very start of the line: nothing before it to walk back
+# over.
+expect word_start("word", 1) == 0
+
+expect matches_in(["cat", "car", "dog"], "ca") == ["cat", "car"]
+# The word being completed does not complete itself.
+expect matches_in(["cat"], "cat") == []
+# Each distinct word once, in the order it was first seen.
+expect matches_in(["cat cat car", "cat"], "ca") == ["cat", "car"]
+expect matches_in(["nothing matches"], "xyz") == []

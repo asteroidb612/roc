@@ -148,9 +148,11 @@ Only `main.roc` is an `app`; the rest are modules, which is how Vim knows
 which file to build.
 
 A module can `import vim.Vim` and do effects of its own, just as the app does.
-But a module that does cannot be tested on its own - `roc test` has no
-platform to resolve `vim` against - so logic worth testing belongs in a module
-that imports nothing: >
+`roc test` will run an `expect` line in any file, whether or not it imports
+`vim.Vim` - the only rule is that the checked expression itself cannot call a
+hosted effect, since nothing answers it outside Vim. So extracting a module is
+not what makes something testable; it is what gives a question worth getting
+right its own place, with its tests beside it: >
 
     roc test ~/.vim/roc/vimrc/Notebook.roc
 <

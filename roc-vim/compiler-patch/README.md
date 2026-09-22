@@ -117,6 +117,22 @@ cp -r /tmp/zstd build/roc/zig-pkg/<the hash in the .zon>
 
 Nothing in roc-vim needs this on a machine with ordinary network access.
 
+## If `roc` panics with "reached unreachable code"
+
+This compiler caches compiled artifacts in `~/.cache/roc`, keyed in a way
+that can go stale under heavy, rapid iteration on the same file paths — the
+symptom is a Zig panic (`thread N panic: reached unreachable code`) from
+`roc check`, `roc build`, or a plugin that used to load through `embed/`
+suddenly failing to. Before assuming it is a real bug in your code or in
+this compiler, clear the cache and try again:
+
+```sh
+rm -rf ~/.cache/roc
+```
+
+If the same command still panics on a clean cache, that is worth reporting
+upstream; if clearing it fixes things, it was the cache.
+
 ## Notes
 
 - Only ELF (Linux, the BSDs) honours the flag. Mach-O and COFF ignore it, so

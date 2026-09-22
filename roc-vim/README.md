@@ -247,19 +247,30 @@ does — it is not limited to pure helpers. Only `main.roc` is an `app`, which i
 how Vim tells which file to build. This works in all three modes, source
 loading included.
 
-### Modules you can test
+### `expect`, everywhere
 
-A module with **no platform in it** is just Roc, so `roc test` runs it on its
-own — no Vim, no plugin, no build step:
+`roc test` will run an `expect` in any `.roc` file — an app, a module, even
+the platform's own `Vim.roc`, which does nothing but wrap Host's hosted
+effects. The only rule is narrower than "no platform allowed": the *specific
+expression* an `expect` checks cannot call a `!` function that bottoms out in
+a real hosted effect, because nothing is there to answer it. Importing
+`vim.Vim`, or sitting next to code that calls it, is fine — the file just has
+to have some pure computation worth checking. That is how the platform itself
+gets tested: `platform/Value.roc` and both `Vim.roc` files carry `expect`
+lines on their private decoders, right where those decoders live, with no
+extraction needed at all.
 
 ```sh
-./test/module_test.sh                                  # every module
-roc test examples-inprocess/vimrc/Notebook.roc         # or just one
+./test/module_test.sh                        # every .roc file with a test
+roc test platform-inprocess/Vim.roc          # or just one
 ```
 
-That is the reason to pull logic out of a plugin. The notebook in the vimrc
-example is the case for it: deciding *which* fenced block the cursor means has
-real edge cases — an unclosed fence, the cursor below the last block, fences
+Given that, extracting a `Notebook.roc` or a `Permalink.roc` out of a plugin
+is not what makes something testable — it is what makes a **cohesive, reused
+question** easy to find and read on its own, with its tests sitting right next
+to it rather than buried in a 600-line file. The notebook in the vimrc example
+is the case for it: deciding *which* fenced block the cursor means has real
+edge cases — an unclosed fence, the cursor below the last block, fences
 indented inside a list item — and each one is an `expect` line rather than
 something to go and try in Vim.
 
@@ -273,16 +284,18 @@ expect code_at(two_blocks, 6) == ["echo one"]   # between blocks: the one above
 expect !found(["```", "echo one"], 2)           # an unclosed fence is no block
 ```
 
-So the split that pays is **pure logic into a module, effects left in the
-app**. A module that imports `vim.Vim` cannot be tested on its own: `roc test`
-has no platform to resolve `vim` against, and fails. In the vimrc example
-`find_block` is in `Notebook.roc` with its tests, while `run_block!` — read the
-buffer, run the code, write the output back — stays in `main.roc` and is thin.
+So the rule of thumb is **pure logic worth its own tests gets its own
+module; a one-line helper gets an `expect` where it already lives**. In the
+vimrc example, `find_block` is in `Notebook.roc` and the permalink's URL
+rewrite is in `Permalink.roc`, each with its own tests; `run_block!` and
+`github_url!` — the parts that touch Vim — stay in `main.roc`, thin, calling
+into the module for the part worth getting right.
 
 Write modules in the **type-module** form (`Name := [].{ ... }`, no `module`
 header), the way the platform's own `Vim.roc` and `Value.roc` do. The `module
 [...]` header still works but is deprecated, and `roc test` exits non-zero on
-the warning.
+the warning — which matters here specifically because `module_test.sh` treats
+a non-zero exit as a failed test file.
 
 `data` is a [`Value`](platform/Value.roc) — the JSON-shaped type everything
 crossing into Roc uses. For an autocommand event it holds the buffer number,
@@ -381,6 +394,7 @@ examples-inprocess/  in-process plugins to copy from
   vimrc/           a real vimrc, rewritten as a plugin
     main.roc       the app: settings, mappings, and the handlers
     Notebook.roc   which fenced block the cursor means, and its tests
+    Permalink.roc  the GitHub URL rewrite, and its tests
   vimrc.vim        the dozen lines of Vimscript it still needs
 test/
   protocol_test.py   pretends to be Vim, checks a channel plugin end to end
@@ -389,7 +403,7 @@ test/
   vim_source_test.sh     the same for a plugin Vim compiles itself
   vimrc_test.sh          checks the vimrc plugin's settings, mappings and commands
   vim_modules_test.sh    a plugin split across files: main.roc plus its modules
-  module_test.sh         the `expect` tests inside modules, with no Vim at all
+  module_test.sh         every `expect` test in the repository, with no Vim at all
   embed_test.c       drives the engine without Vim
   inprocess_stub.c   a C plugin for testing Vim's +roc side on its own
 ```
@@ -398,7 +412,7 @@ test/
 
 ```sh
 # The tests find the compiler and the Vim this repository built, so usually:
-./test/module_test.sh              # no Vim, no plugin: just Roc
+./test/module_test.sh              # every expect in the repo: platform, plugins, modules
 python3 test/protocol_test.py      # no Vim needed
 ./test/vim_test.sh                 # starts a real Vim
 

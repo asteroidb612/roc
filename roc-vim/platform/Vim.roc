@@ -413,3 +413,54 @@ to_vim_err = |result|
         Err(ValueErr(message)) => Err(VimErr(message))
         Err(_) => Err(VimErr("could not read the value Vim sent"))
     }
+
+# =============================================================================
+# Tests
+#
+# The pure decoding this module does - reading what the host sent back, and
+# building the text this module sends out - is worth checking directly.
+# `roc test Vim.roc` runs these without reaching Host, since none of them is
+# a `!` function.
+# =============================================================================
+
+expect decode_answer("{\"ok\":5}") == Ok(Value.Int(5))
+expect decode_answer("{\"err\":\"boom\"}") == Err(VimErr("boom"))
+expect decode_answer("{\"nope\":1}") == Err(VimErr("could not understand the answer from Vim: {\"nope\":1}"))
+expect decode_answer("not json") |> is_err
+
+expect as_str(Value.Text("hi")) == Ok("hi")
+expect as_str(Value.Int(1)) |> is_err
+expect as_int(Value.Int(7)) == Ok(7)
+expect to_vim_err(Ok(5)) == Ok(5)
+expect to_vim_err(Err(ValueErr("bad"))) == Err(VimErr("bad"))
+
+# What roc.vim's roc#notify() actually sends: an autocommand event with data.
+expect
+    decode_event("{\"id\":3,\"body\":{\"event\":\"BufWritePost\",\"data\":{\"file\":\"a.md\"},\"reply\":0}}")
+    == Notify({ name: "BufWritePost", data: Value.Object([("file", Value.Text("a.md"))]), reply_to: 0 })
+# roc#request() sets "reply":1, and the id becomes reply_to so the plugin
+# knows which pending call() to answer.
+expect
+    decode_event("{\"id\":7,\"body\":{\"event\":\"ask\",\"data\":null,\"reply\":1}}")
+    == Notify({ name: "ask", data: Value.Null, reply_to: 7 })
+# Something that is not roc#notify()'s shape at all is a Message, passed
+# through rather than dropped.
+expect decode_event("{\"id\":1,\"body\":{\"anything\":\"at all\"}}") == Message({ id: 1, body: Value.Object([("anything", Value.Text("at all"))]) })
+expect decode_event("{\"kind\":\"timeout\"}") == Timeout
+expect decode_event("{\"kind\":\"closed\"}") == Closed
+expect decode_event("not json") == Closed
+
+# quote() is what keeps every Ex command and expression this module builds
+# safe around filenames with quotes, backslashes, or control characters.
+expect Vim.quote("hi") == "\"hi\""
+expect Vim.quote("say \"hi\"") == "\"say \\\"hi\\\"\""
+expect Vim.quote("back\\slash") == "\"back\\\\slash\""
+expect Vim.quote("a\tb") == "\"a\\tb\""
+expect Vim.quote("") == "\"\""
+
+is_err : Try(a, e) -> Bool
+is_err = |result|
+    match result {
+        Ok(_) => Bool.False
+        Err(_) => Bool.True
+    }

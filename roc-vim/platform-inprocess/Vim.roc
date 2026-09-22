@@ -312,3 +312,43 @@ to_vim_err = |result|
         Err(ValueErr(message)) => Err(VimErr(message))
         Err(_) => Err(VimErr("could not read the value Vim sent"))
     }
+
+# =============================================================================
+# Tests
+#
+# Everything above this point either calls Host or is defined in terms of
+# something that does, except for the pure helpers Vim's answers get decoded
+# through. Those are worth checking directly - `roc test Vim.roc` runs these
+# without ever reaching Host, because none of them is a `!` function.
+# =============================================================================
+
+expect decode_answer("{\"ok\":5}") == Ok(Value.Int(5))
+expect decode_answer("{\"ok\":\"hi\"}") == Ok(Value.Text("hi"))
+expect decode_answer("{\"err\":\"boom\"}") == Err(VimErr("boom"))
+# A malformed envelope - not the {"ok": ...}/{"err": ...} shape at all.
+expect decode_answer("{\"nope\":1}") == Err(VimErr("could not understand the answer from Vim: {\"nope\":1}"))
+# Not even JSON.
+expect decode_answer("not json") |> is_err
+
+expect as_str(Value.Text("hi")) == Ok("hi")
+expect as_str(Value.Int(1)) == Err(VimErr("expected a string, got a number"))
+expect as_int(Value.Int(7)) == Ok(7)
+expect as_int(Value.Text("nope")) |> is_err
+
+expect to_vim_err(Ok(5)) == Ok(5)
+expect to_vim_err(Err(ValueErr("bad"))) == Err(VimErr("bad"))
+
+# quote() is what keeps a plugin from being brittle around filenames with
+# spaces or quotes in them - it is used to build every Ex command and
+# expression this module sends.
+expect Vim.quote("hi") == "'hi'"
+expect Vim.quote("it's") == "'it''s'"
+expect Vim.quote("a b") == "'a b'"
+expect Vim.quote("") == "''"
+
+is_err : Try(a, e) -> Bool
+is_err = |result|
+    match result {
+        Ok(_) => Bool.False
+        Err(_) => Bool.True
+    }

@@ -40,11 +40,31 @@ loop! = ||
 count_words! : () => Try(I64, _)
 count_words! = || {
     lines = Vim.lines!()?
+    Ok(count_words(lines))
+}
+
+## How many words are in `lines`, splitting on spaces and ignoring the runs of
+## them a line like "one  two" leaves behind.
+count_words : List(Str) -> I64
+count_words = |lines| {
     var $total = 0
     for line in lines {
         for word in Str.split_on(line, " ") {
             $total = $total + if Str.is_empty(Str.trim(word)) 0 else 1
         }
     }
-    Ok($total)
+    $total
 }
+
+# =============================================================================
+# Tests
+# =============================================================================
+
+expect count_words([]) == 0
+expect count_words(["one two three"]) == 3
+expect count_words(["one two", "three"]) == 3
+# Extra spaces do not count as extra words.
+expect count_words(["one   two"]) == 2
+expect count_words([""]) == 0
+expect count_words(["  "]) == 0
+expect count_words(["one", "", "two"]) == 2

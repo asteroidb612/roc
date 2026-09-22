@@ -1,12 +1,14 @@
 #!/usr/bin/env sh
 #
-# Run the `expect` tests inside plugin modules.
+# Run every `expect` test in the repository, wherever it lives.
 #
-# A module with no platform in it is just Roc, so `roc test` can run it: no
-# Vim, no plugin, no build step. That is the reason to pull logic out of a
-# plugin and into a module in the first place.
+# `roc test` runs an `expect` line without needing a real Vim behind it, as
+# long as the expression itself does not call a hosted effect - it does not
+# matter whether the file is a plugin, an app, a module, or the platform
+# itself. So this looks for every .roc file with a test in it, not just ones
+# pulled out into their own module.
 #
-# Usage: ./module_test.sh [file.roc ...]   (default: every module it can find)
+# Usage: ./module_test.sh [file.roc ...]   (default: every test it can find)
 
 set -eu
 
@@ -23,9 +25,12 @@ fi
 if [ "$#" -gt 0 ]; then
     modules=$*
 else
-    # A plugin kept as a directory is main.roc plus the modules it imports.
-    modules=$(find "$repo/examples-inprocess" "$repo/examples" -mindepth 2 -name '*.roc' 2>/dev/null \
-        | grep -v '/main\.roc$' | sort)
+    # Everywhere but the vendored compiler build and the Vim build, which are
+    # not this repository's code.
+    modules=$(find "$repo" -name '*.roc' \
+            -not -path "$repo/compiler-patch/build/*" \
+            -not -path "$repo/vim-patch/build/*" \
+        | xargs grep -l '^expect ' 2>/dev/null | sort)
 fi
 
 if [ -z "$modules" ]; then
